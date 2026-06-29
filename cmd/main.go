@@ -16,7 +16,6 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── Wire up subsystems ────────────────────────────────────────────────────
 
 	q := queue.New()
 	mpv := player.NewMpvPlayer()
@@ -63,7 +62,6 @@ func main() {
 	// Set cursor to first item
 	q.JumpTo(0)
 
-	// ── Try to start mpv (optional — TUI works without it) ───────────────────
 
 	if err := mpv.Start(ctx); err != nil {
 		// mpv not installed or failed to start — that's okay for now.
@@ -71,7 +69,6 @@ func main() {
 		_ = err
 	}
 
-	// ── Build and run the Bubbletea program ───────────────────────────────────
 
 	model := app.New(ctx, q, router, mpv)
 
@@ -86,7 +83,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── Cleanup ───────────────────────────────────────────────────────────────
 
 	mpv.Shutdown()
 }
