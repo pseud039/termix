@@ -16,7 +16,7 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
-const mpvSocketPath = "/tmp/termix-mpv.sock"
+const mpvSocketPath = `\\.\pipe\termix-mpv`
 
 // MpvEvent is what readLoop posts to the Events channel when mpv
 // fires an event (as opposed to a command reply).
@@ -126,7 +126,8 @@ func (m *MpvPlayer) Start(ctx context.Context) error {
 		return fmt.Errorf("mpv IPC socket never appeared at %s", mpvSocketPath)
 	}
 
-	conn, err := net.Dial("unix", mpvSocketPath)
+	conn, err := net.Dial("npipe", mpvSocketPath)
+	
 	if err != nil {
 		m.cmd.Process.Kill() //nolint
 		m.cmd = nil
@@ -226,7 +227,6 @@ func (m *MpvPlayer) send(args ...any) (response, error) {
 	}
 }
 
-// ── Player interface ───────────────────────────────────────────────────────
 
 func (m *MpvPlayer) Play(_ context.Context, item queue.Item) error {
 	// "replace" = stop current track and immediately start this one.

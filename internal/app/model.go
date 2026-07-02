@@ -12,25 +12,27 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
-// — Messages the update loop understands —
-
-// TickMsg fires every second to poll playback position.
+// TickMsg fires every second from the tea.Tick loop.
 type TickMsg time.Time
 
-// PlaybackStateMsg carries a fresh snapshot from the active player.
+// PlaybackStateMsg carries a fresh position snapshot polled from the player.
 type PlaybackStateMsg player.State
 
-// ErrorMsg is displayed in the status bar.
+// ErrorMsg shows in the status bar for one cycle.
 type ErrorMsg struct{ Err error }
 
-// TrackStartMsg is sent when a new track begins playing.
+// TrackStartMsg is dispatched whenever a new track begins (play cmd or auto-advance).
 type TrackStartMsg struct{ Item queue.Item }
 
-// QueueAdvanceMsg is sent when the current track ends and we should
-// advance the queue to the next item.
+// QueueAdvanceMsg is dispatched by waitForMpvEventCmd when mpv fires "end-file"
+// with reason "eof" — meaning the track finished naturally (not skipped/stopped).
 type QueueAdvanceMsg struct{}
 
-// — Tabs —
+// mpvEventMsg is an internal message carrying the raw MpvEvent from the channel.
+// It is handled in Update and never leaks outside this file.
+type mpvEventMsg struct{ ev player.MpvEvent }
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
 
 type tab int
 
@@ -42,59 +44,90 @@ const (
 
 var tabNames = []string{"Queue", "Search", "Lyrics"}
 
-// — Model —
+// ── Model ─────────────────────────────────────────────────────────────────────
 
 // Model is the single source of truth for the entire application.
-// Bubbletea calls Init, Update, and View on this.
+// Bubbletea calls Init → Update → View in a tight loop on the main goroutine.
+// Everything that touches shared state must go through this model.
 type Model struct {
-	// Core subsystems (injected at construction)
+	// Injected subsystems
 	queue  *queue.Queue
 	router *player.Router
 	mpv    *player.MpvPlayer
 	ctx    context.Context
 
-	// TUI state
+	// TUI layout
 	activeTab   tab
 	width       int
 	height      int
 	statusMsg   string
 	statusIsErr bool
 
-	// Playback state (refreshed every tick)
+	// Playback state — updated every second by pollPlaybackCmd
 	playing      bool
 	position     time.Duration
-	volume       int // 0–100
+	volume       int
 	currentTrack queue.Item
 	hasTrack     bool
 
-	// Search pane state
-	searchQuery  string
-	searchMode   bool // true = user is typing
+	// Whether mpv started successfully — gates playback-related UI hints
+	mpvReady bool
+
+	// Search pane
+	searchQuery string
+	searchMode  bool
 }
 
-func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer) Model {
+func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvReady bool) Model {
 	return Model{
-		queue:  q,
-		router: r,
-		mpv:    mpv,
-		ctx:    ctx,
-		volume: 80,
+		queue:    q,
+		router:   r,
+		mpv:      mpv,
+		ctx:      ctx,
+		volume:   80,
+		mpvReady: mpvReady,
 	}
 }
 
-// — Init —
+// ── Init ──────────────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
-	return tickCmd()
+	cmds := []tea.Cmd{tickCmd()}
+
+	// Only start listening for mpv events if mpv actually started.
+	// If mpv isn't running, waitForMpvEventCmd would block forever on a
+	// channel that never receives — so we gate it here.
+	if m.mpvReady {
+		cmds = append(cmds, m.waitForMpvEventCmd())
+	}
+
+	return tea.Batch(cmds...)
 }
 
+// tickCmd returns a Cmd that fires TickMsg after one second.
+// We re-issue it on every TickMsg to keep the loop running.
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return TickMsg(t)
 	})
 }
 
-// — Update —
+// waitForMpvEventCmd returns a Cmd that blocks on the mpv events channel.
+// When an event arrives it wraps it in mpvEventMsg and returns it to Update.
+//
+// Critical design point: tea.Cmd is one-shot. After it fires once, it's done.
+// So every time we handle an mpvEventMsg in Update we MUST re-issue this cmd
+// — otherwise we stop listening and future end-file events are silently lost.
+func (m Model) waitForMpvEventCmd() tea.Cmd {
+	return func() tea.Msg {
+		// This blocks until mpv sends an event (end-file, start-file, etc.).
+		// Bubbletea runs this in a goroutine so it doesn't freeze the UI.
+		ev := <-m.mpv.Events()
+		return mpvEventMsg{ev: ev}
+	}
+}
+
+// ── Update ────────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -104,20 +137,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case TickMsg:
+		// Every second: reschedule the tick AND poll mpv for current position.
 		return m, tea.Batch(tickCmd(), m.pollPlaybackCmd())
 
 	case PlaybackStateMsg:
 		m.playing = msg.Playing
 		m.position = msg.Position
-		m.volume = msg.Volume
+		// Don't overwrite volume here — we manage it locally to avoid
+		// the value jumping around during the poll round-trip.
 
 	case TrackStartMsg:
 		m.hasTrack = true
 		m.currentTrack = msg.Item
-		m.statusMsg = fmt.Sprintf("Now playing: %s – %s", msg.Item.Artist, msg.Item.Title)
+		m.statusIsErr = false
+		m.statusMsg = fmt.Sprintf("playing: %s — %s [%s]",
+			msg.Item.Artist, msg.Item.Title, msg.Item.Source)
 
 	case QueueAdvanceMsg:
+		// A track ended naturally — advance the queue and play the next item.
 		return m, m.advanceQueueCmd()
+
+	case mpvEventMsg:
+		// We received an event from mpv. Re-issue waitForMpvEventCmd immediately
+		// so we keep listening — if we forget this, future events are lost.
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.waitForMpvEventCmd())
+
+		switch msg.ev.Type {
+		case "end-file":
+			// reason "eof"  → track played to completion → advance queue
+			// reason "stop" → we called stop() ourselves → don't advance
+			// reason "error"→ mpv couldn't play the file → show error, advance
+			switch msg.ev.Reason {
+			case "eof":
+				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{} })
+			case "error":
+				m.statusMsg = "mpv: error playing track, skipping"
+				m.statusIsErr = true
+				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{} })
+			}
+			// "stop" and "quit" → do nothing, user triggered it
+
+		case "start-file":
+			// mpv started loading a new file — clear any stale error.
+			m.statusIsErr = false
+		}
+
+		return m, tea.Batch(cmds...)
 
 	case ErrorMsg:
 		m.statusMsg = msg.Err.Error()
@@ -130,8 +196,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Key handling ──────────────────────────────────────────────────────────────
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// If user is typing a search query, intercept most keys.
 	if m.searchMode {
 		return m.handleSearchKey(msg)
 	}
@@ -140,7 +207,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
-	// Tab switching
 	case "1":
 		m.activeTab = tabQueue
 	case "2":
@@ -148,7 +214,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "3":
 		m.activeTab = tabLyrics
 
-	// Playback controls
 	case " ":
 		return m, m.togglePauseCmd()
 	case "n":
@@ -164,14 +229,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "-":
 		return m, m.volumeCmd(-5)
 
-	// Search mode entry
 	case "/":
 		if m.activeTab == tabSearch {
 			m.searchMode = true
 			m.searchQuery = ""
 		}
 
-	// Queue: play selected item
 	case "enter":
 		if m.activeTab == tabQueue {
 			return m, m.playCurrentQueueItemCmd()
@@ -191,7 +254,7 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		m.searchMode = false
-		// TODO: trigger actual search in M3+ when source adapters are wired
+		// TODO M3: trigger source search
 	default:
 		if len(msg.String()) == 1 {
 			m.searchQuery += msg.String()
@@ -200,13 +263,15 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// — Commands (side effects) —
+// ── Commands ──────────────────────────────────────────────────────────────────
 
+// pollPlaybackCmd asks the active player for its current position.
+// Runs every second via TickMsg. Returns nil (no-op) when nothing is playing.
 func (m Model) pollPlaybackCmd() tea.Cmd {
 	return func() tea.Msg {
 		pos, playing, err := m.router.Position(m.ctx)
 		if err != nil {
-			return nil // silent — poll errors are transient
+			return nil // transient poll errors are expected; don't spam the status bar
 		}
 		return PlaybackStateMsg{
 			Playing:  playing,
@@ -283,6 +348,7 @@ func (m Model) volumeCmd(delta int) tea.Cmd {
 		if err := m.router.SetVolume(m.ctx, newVol); err != nil {
 			return ErrorMsg{err}
 		}
+		// Update volume locally immediately — don't wait for the next poll tick.
 		return PlaybackStateMsg{Playing: m.playing, Position: m.position, Volume: newVol}
 	}
 }
@@ -304,7 +370,11 @@ func (m Model) advanceQueueCmd() tea.Cmd {
 	return func() tea.Msg {
 		item, ok := m.queue.Next()
 		if !ok {
-			return nil
+			// End of queue — update status bar but don't error.
+			return TrackStartMsg{Item: queue.Item{
+				Title:  "End of queue",
+				Artist: "Add more tracks with [2] Search",
+			}}
 		}
 		if err := m.router.Play(m.ctx, item); err != nil {
 			return ErrorMsg{err}
@@ -313,7 +383,7 @@ func (m Model) advanceQueueCmd() tea.Cmd {
 	}
 }
 
-// — View —
+// ── View ──────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
 	if m.width == 0 {
@@ -323,7 +393,10 @@ func (m Model) View() string {
 	header := m.renderHeader()
 	playerBar := m.renderPlayerBar()
 	statusBar := m.renderStatus()
-	contentHeight := m.height - lipgloss.Height(header) - lipgloss.Height(playerBar) - lipgloss.Height(statusBar)
+	contentHeight := m.height -
+		lipgloss.Height(header) -
+		lipgloss.Height(playerBar) -
+		lipgloss.Height(statusBar)
 	content := m.renderContent(contentHeight)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
