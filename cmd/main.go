@@ -15,8 +15,6 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── Wire up subsystems ────────────────────────────────────────────────────
-
 	q := queue.New()
 	mpv := player.NewMpvPlayer()
 	router := player.NewRouter(mpv)
@@ -128,18 +126,18 @@ func main() {
 // }
 
 func loadDemoQueue(q *queue.Queue) {
-    q.Add(queue.Item{
-        ID:     "test-1",
-        Title:  "Test Tone 440Hz",
-        Artist: "ffmpeg",
-        Source: queue.SourceLocal,
-        URI:    "/tmp/t1.mp3",
-    })
-    q.Add(queue.Item{
-        ID:     "test-2",
-        Title:  "Test Tone 528Hz",
-        Artist: "ffmpeg",
-        Source: queue.SourceLocal,
-        URI:    "/tmp/t2.mp3",
-    })
+	q.Add(queue.Item{
+		ID:     "test-1",
+		Title:  "Test Tone 440Hz",
+		Artist: "ffmpeg",
+		Source: queue.SourceLocal,
+		URI:    "/tmp/t1.mp3",
+	})
+	q.Add(queue.Item{
+		ID:     "test-2",
+		Title:  "Test Tone 528Hz",
+		Artist: "ffmpeg",
+		Source: queue.SourceLocal,
+		URI:    "/tmp/t2.mp3",
+	})
 }
