@@ -12,6 +12,8 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
+// ── Messages ──────────────────────────────────────────────────────────────────
+
 // TickMsg fires every second from the tea.Tick loop.
 type TickMsg time.Time
 

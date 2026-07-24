@@ -16,7 +16,7 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
-const mpvSocketPath = `\\.\pipe\termix-mpv`
+const mpvSocketPath = "/tmp/termix-mpv.sock"
 
 // MpvEvent is what readLoop posts to the Events channel when mpv
 // fires an event (as opposed to a command reply).
@@ -38,9 +38,10 @@ type rawEvent struct {
 // mpv is started once and kept running; we loadfile new tracks into it.
 //
 // IPC protocol: newline-delimited JSON.
-//   Send:  {"command": ["loadfile", "ytdl://abc123"], "request_id": 1}
-//   Recv:  {"request_id": 1, "error": "success", "data": null}   ← reply
-//          {"event": "end-file", "reason": "eof"}                 ← event
+//
+//	Send:  {"command": ["loadfile", "ytdl://abc123"], "request_id": 1}
+//	Recv:  {"request_id": 1, "error": "success", "data": null}   ← reply
+//	       {"event": "end-file", "reason": "eof"}                 ← event
 type MpvPlayer struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -88,22 +89,26 @@ func (m *MpvPlayer) Start(ctx context.Context) error {
 		return nil // already running
 	}
 
-	// Fail fast with a clear message if mpv isn't on PATH.
-	// exec.LookPath checks PATH so the user knows exactly what's missing.
-	mpvBin, err := exec.LookPath("mpv")
+	// Find the mpv binary. LookPath checks PATH, but we also probe common
+	// locations that package managers (brew, snap, nix, pacman) use and that
+	// might not be on the PATH the Go binary inherits.
+	mpvBin, err := findMpv()
 	if err != nil {
-		return fmt.Errorf("mpv not found in PATH — install mpv to enable playback")
+		return fmt.Errorf("mpv not found — install mpv (brew install mpv / apt install mpv / pacman -S mpv)")
 	}
 
 	// Remove any stale socket from a previous crash.
 	os.Remove(mpvSocketPath)
 
-	m.cmd = exec.CommandContext(ctx, mpvBin,
+	// Use context.Background() — NOT the passed-in ctx — so that the mpv
+	// process isn't killed when the app context is cancelled mid-startup.
+	// We manage mpv's lifetime explicitly via Shutdown().
+	m.cmd = exec.CommandContext(context.Background(), mpvBin,
 		"--no-video",
-		"--idle=yes",                          // stay alive with no track loaded
+		"--idle=yes", // stay alive with no track loaded
 		"--input-ipc-server="+mpvSocketPath,
-		"--ytdl=yes",                          // pass YouTube/SoundCloud URLs to yt-dlp
-		"--really-quiet",                      // suppress mpv's own terminal output
+		"--ytdl=yes",     // pass YouTube/SoundCloud URLs to yt-dlp
+		"--really-quiet", // suppress mpv's own terminal output
 	)
 
 	if err := m.cmd.Start(); err != nil {
@@ -126,8 +131,7 @@ func (m *MpvPlayer) Start(ctx context.Context) error {
 		return fmt.Errorf("mpv IPC socket never appeared at %s", mpvSocketPath)
 	}
 
-	conn, err := net.Dial("npipe", mpvSocketPath)
-	
+	conn, err := net.Dial("unix", mpvSocketPath)
 	if err != nil {
 		m.cmd.Process.Kill() //nolint
 		m.cmd = nil
@@ -227,6 +231,7 @@ func (m *MpvPlayer) send(args ...any) (response, error) {
 	}
 }
 
+// ── Player interface ───────────────────────────────────────────────────────
 
 func (m *MpvPlayer) Play(_ context.Context, item queue.Item) error {
 	// "replace" = stop current track and immediately start this one.
@@ -272,6 +277,29 @@ func (m *MpvPlayer) Stop(_ context.Context) error {
 	return err
 }
 
+// findMpv tries exec.LookPath first, then falls back to common install
+// locations that package managers drop mpv into outside the standard PATH.
+func findMpv() (string, error) {
+	if p, err := exec.LookPath("mpv"); err == nil {
+		return p, nil
+	}
+	candidates := []string{
+		"/usr/bin/mpv",
+		"/usr/local/bin/mpv",
+		"/opt/homebrew/bin/mpv", // Apple Silicon brew
+		"/usr/local/Cellar/mpv", // Intel brew (version-suffixed, skip)
+		"/snap/bin/mpv",
+		"/nix/var/nix/profiles/default/bin/mpv",
+		os.Getenv("HOME") + "/.nix-profile/bin/mpv",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("mpv not found")
+}
+
 // Shutdown kills mpv and cleans up the socket. Call this on app exit.
 func (m *MpvPlayer) Shutdown() {
 	m.mu.Lock()
@@ -282,7 +310,7 @@ func (m *MpvPlayer) Shutdown() {
 	}
 	if m.cmd != nil && m.cmd.Process != nil {
 		m.cmd.Process.Kill() //nolint
-		m.cmd.Wait()        //nolint
+		m.cmd.Wait()         //nolint
 		m.cmd = nil
 	}
 	os.Remove(mpvSocketPath)

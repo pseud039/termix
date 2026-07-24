@@ -15,15 +15,15 @@ import (
 // muted grey secondary. Inspired by rmpc's dense info layout.
 
 var (
-	colBg       = lipgloss.Color("#1a1a1a")
-	colSurface  = lipgloss.Color("#242424")
-	colBorder   = lipgloss.Color("#3a3a3a")
-	colMuted    = lipgloss.Color("#666666")
-	colText     = lipgloss.Color("#d4d4d4")
-	colAccent   = lipgloss.Color("#98c379") // green
-	colAccent2  = lipgloss.Color("#61afef") // blue for secondary info
-	colWarning  = lipgloss.Color("#e5c07b")
-	colDanger   = lipgloss.Color("#e06c75")
+	colBg          = lipgloss.Color("#1a1a1a")
+	colSurface     = lipgloss.Color("#242424")
+	colBorder      = lipgloss.Color("#3a3a3a")
+	colMuted       = lipgloss.Color("#666666")
+	colText        = lipgloss.Color("#d4d4d4")
+	colAccent      = lipgloss.Color("#98c379") // green
+	colAccent2     = lipgloss.Color("#61afef") // blue for secondary info
+	colWarning     = lipgloss.Color("#e5c07b")
+	colDanger      = lipgloss.Color("#e06c75")
 	colTabActive   = lipgloss.Color("#98c379")
 	colTabInactive = lipgloss.Color("#555555")
 )
@@ -32,22 +32,22 @@ var (
 
 var (
 	styleBase = lipgloss.NewStyle().
-		Background(colBg).
-		Foreground(colText)
+			Background(colBg).
+			Foreground(colText)
 
 	styleBorder = lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(colBorder)
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(colBorder)
 
 	styleAccent = lipgloss.NewStyle().
-		Foreground(colAccent).
-		Bold(true)
+			Foreground(colAccent).
+			Bold(true)
 
 	styleMuted = lipgloss.NewStyle().
-		Foreground(colMuted)
+			Foreground(colMuted)
 
 	styleText = lipgloss.NewStyle().
-		Foreground(colText)
+			Foreground(colText)
 )
 
 // ── Header (tab bar) ──────────────────────────────────────────────────────────

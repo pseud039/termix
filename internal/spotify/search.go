@@ -1,0 +1,57 @@
+package spotify
+
+import (
+	"context"
+
+	zspotify "github.com/zmb3/spotify/v2"
+
+	"github.com/pseud039/termix/internal/queue"
+)
+
+// SearchProvider wraps the Spotify Web API's track search and returns
+// results already boxed as queue.Item — no separate Track type needed,
+// since queue.Item already carries everything the rest of the app cares
+// about (Source, URI, cover art, etc).
+type SearchProvider struct {
+	client *zspotify.Client
+}
+
+func NewSearchProvider(client *zspotify.Client) *SearchProvider {
+	return &SearchProvider{client: client}
+}
+
+// Search queries Spotify for tracks matching q and returns up to 15
+// results as queue.Items with Source == queue.SourceSpotify. Callers add
+// the one the user picks straight into the queue with q.Add(item).
+func (s *SearchProvider) Search(ctx context.Context, q string) ([]queue.Item, error) {
+	result, err := s.client.Search(ctx, q, zspotify.SearchTypeTrack, zspotify.Limit(15))
+	if err != nil {
+		return nil, err
+	}
+	if result.Tracks == nil {
+		return nil, nil
+	}
+
+	items := make([]queue.Item, 0, len(result.Tracks.Tracks))
+	for _, t := range result.Tracks.Tracks {
+		artist := ""
+		if len(t.Artists) > 0 {
+			artist = t.Artists[0].Name
+		}
+		cover := ""
+		if len(t.Album.Images) > 0 {
+			cover = t.Album.Images[0].URL
+		}
+		items = append(items, queue.Item{
+			ID:       string(t.ID),
+			Title:    t.Name,
+			Artist:   artist,
+			Album:    t.Album.Name,
+			Duration: t.TimeDuration(),
+			Source:   queue.SourceSpotify,
+			URI:      string(t.URI),
+			CoverURL: cover,
+		})
+	}
+	return items, nil
+}
