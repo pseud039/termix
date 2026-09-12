@@ -30,8 +30,6 @@ func main() {
 		return
 	}
 
-	// ── Wire up subsystems ────────────────────────────────────────────────────
-
 	q := queue.New()
 	mpv := player.NewMpvPlayer()
 	router := player.NewRouter(mpv)

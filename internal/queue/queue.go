@@ -1,5 +1,5 @@
 package queue
-
+,
 import (
 	"sync"
 	"time"
@@ -23,7 +23,7 @@ func (s SourceType) String() string {
 	case SourceLocal:
 		return "local"
 	default:
-		return "unknown"
+		return "spotify" // default to Spotify for unknown values
 	}
 }
 
