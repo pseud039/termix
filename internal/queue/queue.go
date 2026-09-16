@@ -1,5 +1,5 @@
 package queue
-,
+
 import (
 	"sync"
 	"time"
