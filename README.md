@@ -3,7 +3,7 @@
 > A terminal music player that unifies **Spotify**, **YouTube**, and **local audio** into a single persistent queue.
 
 <img src="https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white" /> <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" /> <img src="https://img.shields.io/badge/WSL2-4D4D4D?style=for-the-badge&logo=windows-terminal&logoColor=white" /> <img src="https://img.shields.io/badge/Spotify-1DB954?style=for-the-badge&logo=spotify&logoColor=white" /> <img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" />
-<img src="https://img.shields.io/badge/Status-In_Development-orange?style=for-the-badge" />
+<img src="https://img.shields.io/badge/Status-Stable-green?style=for-the-badge" />
 
 Termix is a keyboard-first TUI music player built with Go and Bubble Tea. Instead of switching between Spotify, YouTube, and local files, Termix lets you queue them all together and control everything from one interface.
 
