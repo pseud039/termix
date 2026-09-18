@@ -31,7 +31,7 @@ func NewSearchProvider(dir string) *SearchProvider {
 // the folder) contains every word of q, ignoring case.
 func (s *SearchProvider) Search(ctx context.Context, q string) ([]queue.Item, error) {
 	if info, err := os.Stat(s.dir); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("music folder %q not found (set TERMIX_MUSIC_DIR)", s.dir)
+		return nil, fmt.Errorf("music folder %q not found (set local.music_dir in config.toml)", s.dir)
 	}
 	words := strings.Fields(strings.ToLower(q))
 

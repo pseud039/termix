@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,12 +37,12 @@ type Client struct {
 	base   string
 }
 
-// NewClient reads LASTFM_API_KEY from the environment. Without a key smart
+// NewClient takes the Last.fm API key from config.toml. Without a key smart
 // shuffle is unavailable, so the caller shows a hint instead.
-func NewClient() (*Client, error) {
-	key := strings.TrimSpace(os.Getenv("LASTFM_API_KEY"))
+func NewClient(key string) (*Client, error) {
+	key = strings.TrimSpace(key)
 	if key == "" {
-		return nil, fmt.Errorf("LASTFM_API_KEY not set")
+		return nil, fmt.Errorf("lastfm.api_key not set in config.toml")
 	}
 	return newClient(key, defaultBase), nil
 }

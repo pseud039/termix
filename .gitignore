@@ -24,11 +24,12 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
-.env
+# local config (holds secrets)
+config.toml
 
 # Editor/IDE
 # .idea/
 # .vscode/
 termix
 CLAUDE.md
+.env

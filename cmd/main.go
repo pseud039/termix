@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/pseud039/termix/internal/app"
+	"github.com/pseud039/termix/internal/config"
 	"github.com/pseud039/termix/internal/lastfm"
 	"github.com/pseud039/termix/internal/local"
 	"github.com/pseud039/termix/internal/lyrics"
@@ -22,14 +22,30 @@ import (
 
 func main() {
 	ctx := context.Background()
-	if err := loadDotEnv(".env"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not load .env: %v\n", err)
+
+	// Settings come from config.toml (TERMIX_CONFIG, next to the binary,
+	// or the user config dir). A missing file gets a template written; a
+	// broken one is fatal so a typo can't silently disable a source.
+	cfg, notes, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "termix: %v\n", err)
+		os.Exit(1)
+	}
+	for _, n := range notes {
+		fmt.Fprintf(os.Stderr, "note: %s\n", n)
+	}
+	if cfg.Path != "" {
+		fmt.Fprintf(os.Stderr, "config: %s\n", cfg.Path)
+	}
+	creds := spotifyclient.Credentials{
+		ClientID:     cfg.Spotify.ClientID,
+		ClientSecret: cfg.Spotify.ClientSecret,
 	}
 
 	// `termix auth` runs the one-time browser OAuth flow and exits without
 	// launching the TUI.
 	if len(os.Args) > 1 && os.Args[1] == "auth" {
-		if err := spotifyclient.Login(ctx); err != nil {
+		if err := spotifyclient.Login(ctx, creds); err != nil {
 			fmt.Fprintf(os.Stderr, "termix auth: %v\n", err)
 			os.Exit(1)
 		}
@@ -45,23 +61,23 @@ func main() {
 	// Only sources whose provider was created go in the map; the Search tab
 	// shows how to enable the rest.
 	searchers := map[queue.SourceType]app.Searcher{}
-	if spClient, err := spotifyclient.NewClient(ctx); err != nil {
+	if spClient, err := spotifyclient.NewClient(ctx, creds); err != nil {
 		fmt.Fprintf(os.Stderr, "note: Spotify not connected (%v)\n", err)
 	} else {
-		router.SetSpotifyPlayer(player.NewSpotifyPlayer(spClient))
+		router.SetSpotifyPlayer(player.NewSpotifyPlayer(spClient, cfg.Spotify.Device))
 		searchers[queue.SourceSpotify] = spotifyclient.NewSearchProvider(spClient)
 	}
-	if yt, err := youtube.NewSearchProvider(); err != nil {
+	if yt, err := youtube.NewSearchProvider(cfg.YouTube.YTDLP); err != nil {
 		fmt.Fprintf(os.Stderr, "note: YouTube search off (%v)\n", err)
 	} else {
 		searchers[queue.SourceYouTube] = yt
 	}
-	searchers[queue.SourceLocal] = local.NewSearchProvider(musicDir())
+	searchers[queue.SourceLocal] = local.NewSearchProvider(cfg.Local.MusicDir)
 
 	// Smart shuffle needs a Last.fm key. Without one the z key skips the
 	// smart mode and the status line says how to enable it.
 	var recommender *recommend.Recommender
-	if lfm, err := lastfm.NewClient(); err != nil {
+	if lfm, err := lastfm.NewClient(cfg.LastFM.APIKey); err != nil {
 		fmt.Fprintf(os.Stderr, "note: smart shuffle off (%v)\n", err)
 	} else {
 		resolvers := map[queue.SourceType]recommend.Searcher{}
@@ -100,55 +116,4 @@ func main() {
 	}
 
 	mpv.Shutdown()
-}
-
-// musicDir is where local search looks: TERMIX_MUSIC_DIR, else ~/Music.
-func musicDir() string {
-	if d := os.Getenv("TERMIX_MUSIC_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "Music"
-	}
-	return filepath.Join(home, "Music")
-}
-
-func loadDotEnv(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "export ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if key == "" || os.Getenv(key) != "" {
-			continue
-		}
-		if len(value) >= 2 {
-			if (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) || (strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
-				value = value[1 : len(value)-1]
-			}
-		}
-		if err := os.Setenv(key, value); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

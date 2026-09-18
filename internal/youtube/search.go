@@ -21,17 +21,18 @@ type SearchProvider struct {
 	ytdlp string
 }
 
-// NewSearchProvider locates yt-dlp: TERMIX_YTDLP if set, otherwise PATH.
-func NewSearchProvider() (*SearchProvider, error) {
-	if p := os.Getenv("TERMIX_YTDLP"); p != "" {
-		if _, err := os.Stat(p); err != nil {
-			return nil, fmt.Errorf("TERMIX_YTDLP: %w", err)
+// NewSearchProvider locates yt-dlp: ytdlpPath (youtube.ytdlp in
+// config.toml) if set, otherwise PATH.
+func NewSearchProvider(ytdlpPath string) (*SearchProvider, error) {
+	if ytdlpPath != "" {
+		if _, err := os.Stat(ytdlpPath); err != nil {
+			return nil, fmt.Errorf("youtube.ytdlp: %w", err)
 		}
-		return &SearchProvider{ytdlp: p}, nil
+		return &SearchProvider{ytdlp: ytdlpPath}, nil
 	}
 	p, err := exec.LookPath("yt-dlp")
 	if err != nil {
-		return nil, fmt.Errorf("yt-dlp not found on PATH (set TERMIX_YTDLP to its path)")
+		return nil, fmt.Errorf("yt-dlp not found on PATH (set youtube.ytdlp in config.toml)")
 	}
 	return &SearchProvider{ytdlp: p}, nil
 }

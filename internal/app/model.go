@@ -578,7 +578,7 @@ func searchUnavailableHint(src queue.SourceType) string {
 	case queue.SourceSpotify:
 		return "Spotify not connected — run `termix auth` to enable search"
 	case queue.SourceYouTube:
-		return "yt-dlp not found — install it or set TERMIX_YTDLP"
+		return "yt-dlp not found — install it or set youtube.ytdlp in config.toml"
 	}
 	return src.String() + " search is not available"
 }
@@ -624,7 +624,7 @@ func (m Model) cycleShuffle() (tea.Model, tea.Cmd) {
 	case queue.ShuffleOn:
 		if m.recommender == nil {
 			m.queue.SetShuffleMode(queue.ShuffleOff)
-			m.statusMsg = "shuffle off — smart shuffle needs LASTFM_API_KEY in .env (free key at last.fm/api)"
+			m.statusMsg = "shuffle off — smart shuffle needs lastfm.api_key in config.toml (free key at last.fm/api)"
 			m.statusIsErr = true
 			return m, nil
 		}

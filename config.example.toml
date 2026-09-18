@@ -1,0 +1,40 @@
+# Termix configuration.
+#
+# Termix looks for this file at, in order:
+#   1. the path in the TERMIX_CONFIG environment variable
+#   2. config.toml next to the termix executable
+#   3. <user config dir>/termix/config.toml
+#      (~/.config/termix on Linux, %AppData%\termix on Windows,
+#       ~/Library/Application Support/termix on macOS)
+#
+# The environment variable named next to each key overrides its value.
+# On Windows write paths in single quotes, e.g. 'C:\Users\me\Music', so the
+# backslashes are kept as-is.
+
+[spotify]
+# Client ID and secret from https://developer.spotify.com/dashboard.
+# Needed for Spotify search and playback. After filling them in, run
+# `termix auth` once to log in.
+# Env override: SPOTIFY_ID, SPOTIFY_SECRET
+client_id = ""
+client_secret = ""
+# Optional. Termix auto-detects the spotifyd Connect device; set this to an
+# exact device name only if it picks the wrong one (e.g. your phone).
+# Env override: TERMIX_SPOTIFY_DEVICE
+device = ""
+
+[lastfm]
+# Optional. Last.fm API key for smart shuffle (similar tracks are pulled from
+# Last.fm and looked up on your sources). Free: https://www.last.fm/api/account/create
+# Env override: LASTFM_API_KEY
+api_key = ""
+
+[local]
+# Optional. Folder that Local search scans (default: your home Music folder).
+# Env override: TERMIX_MUSIC_DIR
+music_dir = ""
+
+[youtube]
+# Optional. Path to yt-dlp if it isn't on PATH (needed for YouTube search).
+# Env override: TERMIX_YTDLP
+ytdlp = ""

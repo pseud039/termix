@@ -22,18 +22,22 @@ const redirectURI = "http://127.0.0.1:8080/callback"
 
 const authState = "termix-auth"
 
+// Credentials identify the Spotify app registered at
+// https://developer.spotify.com/dashboard. They come from config.toml.
+type Credentials struct {
+	ClientID     string
+	ClientSecret string
+}
+
 // oauthConfig builds the OAuth2 config directly against Spotify's
-// documented endpoints. SPOTIFY_ID and SPOTIFY_SECRET must be set in
-// your environment (same convention zmb3/spotify's own docs use).
-func oauthConfig() (*oauth2.Config, error) {
-	id := os.Getenv("SPOTIFY_ID")
-	secret := os.Getenv("SPOTIFY_SECRET")
-	if id == "" || secret == "" {
-		return nil, errors.New("SPOTIFY_ID and SPOTIFY_SECRET must be set in your environment")
+// documented endpoints.
+func oauthConfig(creds Credentials) (*oauth2.Config, error) {
+	if creds.ClientID == "" || creds.ClientSecret == "" {
+		return nil, errors.New("spotify.client_id and spotify.client_secret are not set in config.toml")
 	}
 	return &oauth2.Config{
-		ClientID:     id,
-		ClientSecret: secret,
+		ClientID:     creds.ClientID,
+		ClientSecret: creds.ClientSecret,
 		RedirectURL:  redirectURI,
 		Scopes: []string{
 			"user-read-playback-state",
@@ -91,8 +95,8 @@ func loadToken() (*oauth2.Token, error) {
 // and saves the resulting token to disk. Call this from `termix auth`.
 // It blocks until the browser redirect hits our local callback server,
 // or times out after 3 minutes.
-func Login(ctx context.Context) error {
-	cfg, err := oauthConfig()
+func Login(ctx context.Context, creds Credentials) error {
+	cfg, err := oauthConfig(creds)
 	if err != nil {
 		return err
 	}
@@ -174,8 +178,8 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 // NewClient loads the cached token from disk (saved by Login) and
 // returns a ready-to-use Spotify Web API client that refreshes and
 // persists its own token silently.
-func NewClient(ctx context.Context) (*zspotify.Client, error) {
-	cfg, err := oauthConfig()
+func NewClient(ctx context.Context, creds Credentials) (*zspotify.Client, error) {
+	cfg, err := oauthConfig(creds)
 	if err != nil {
 		return nil, err
 	}

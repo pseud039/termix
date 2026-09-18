@@ -129,12 +129,10 @@ func TestRecommendReportsRealErrors(t *testing.T) {
 }
 
 func TestNewClientNeedsKey(t *testing.T) {
-	t.Setenv("LASTFM_API_KEY", "")
-	if _, err := NewClient(); err == nil {
+	if _, err := NewClient(""); err == nil {
 		t.Fatal("expected error without key")
 	}
-	t.Setenv("LASTFM_API_KEY", " abc ")
-	c, err := NewClient()
+	c, err := NewClient(" abc ")
 	if err != nil || c.apiKey != "abc" {
 		t.Fatalf("client = %+v, err = %v", c, err)
 	}

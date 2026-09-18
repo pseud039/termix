@@ -56,13 +56,13 @@ func TestPickDevice(t *testing.T) {
 			wantID: "ph",
 		},
 		{
-			name:    "env override matches case-insensitively",
+			name:    "device override matches case-insensitively",
 			devices: []zspotify.PlayerDevice{spotifyd, phone},
 			want:    "REALME 8I",
 			wantID:  "ph",
 		},
 		{
-			name:    "env override not found lists devices",
+			name:    "device override not found lists devices",
 			devices: []zspotify.PlayerDevice{spotifyd, phone},
 			want:    "nope",
 			wantErr: `"spotifyd@pseudo" (Speaker)`,
@@ -70,12 +70,12 @@ func TestPickDevice(t *testing.T) {
 		{
 			name:    "two spotifyd instances is ambiguous",
 			devices: []zspotify.PlayerDevice{spotifyd, dev("sd2", "spotifyd@other", "Speaker"), phone},
-			wantErr: "TERMIX_SPOTIFY_DEVICE",
+			wantErr: "spotify.device",
 		},
 		{
 			name:    "phone and desktop only is ambiguous",
 			devices: []zspotify.PlayerDevice{phone, desktop},
-			wantErr: "TERMIX_SPOTIFY_DEVICE",
+			wantErr: "spotify.device",
 		},
 	}
 

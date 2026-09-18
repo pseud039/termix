@@ -87,14 +87,21 @@ choco install mpvio yt-dlp
 
 Termix looks for `mpv.exe` on your `PATH`, then next to `termix.exe`, then in the default Scoop and Chocolatey folders. YouTube playback also needs `yt-dlp` on your `PATH` (or next to `mpv.exe`). If mpv can't be found, Termix still starts and shows an install hint in the status line.
 
-Install `spotifyd` separately. Termix picks the spotifyd Spotify Connect device automatically (by its `spotifyd@...` name, or failing that by its "Speaker" type), so your phone or desktop app being online doesn't matter. If it still can't tell, set `TERMIX_SPOTIFY_DEVICE` to the exact device name.
+Install `spotifyd` separately. Termix picks the spotifyd Spotify Connect device automatically (by its `spotifyd@...` name, or failing that by its "Speaker" type), so your phone or desktop app being online doesn't matter. If it still can't tell, set `spotify.device` in `config.toml` to the exact device name.
 
-Set Spotify credentials:
+### Configure
 
-```bash
-export SPOTIFY_ID=your_client_id
-export SPOTIFY_SECRET=your_client_secret
-```
+Run Termix once and it writes a commented `config.toml` to your user config directory and prints the path:
+
+| OS | Path |
+|----|------|
+| Linux | `~/.config/termix/config.toml` |
+| Windows | `%AppData%\termix\config.toml` |
+| macOS | `~/Library/Application Support/termix/config.toml` |
+
+Open it and fill in `client_id` and `client_secret` under `[spotify]` (from the [Spotify developer dashboard](https://developer.spotify.com/dashboard)). The other keys are optional: a Last.fm key for smart shuffle, the spotifyd device name, your music folder and the yt-dlp path.
+
+If you'd rather keep the config next to the binary, copy `config.example.toml` beside `termix` as `config.toml`; that file is used first. `TERMIX_CONFIG=/path/to/file` overrides both. The environment variables `SPOTIFY_ID`, `SPOTIFY_SECRET`, `LASTFM_API_KEY`, `TERMIX_SPOTIFY_DEVICE`, `TERMIX_MUSIC_DIR` and `TERMIX_YTDLP` still override individual values from the file.
 
 Authenticate once:
 
@@ -119,7 +126,7 @@ go run ./cmd
 | `n` / `p` | Next / Previous |
 | `←` `→` | Seek |
 | `+` `-` | Volume |
-| `z` | Shuffle off → on → smart (smart needs `LASTFM_API_KEY`) |
+| `z` | Shuffle off → on → smart (smart needs `lastfm.api_key` in `config.toml`) |
 | `r` | Repeat off → all → one |
 | `/` | Search |
 | `Enter` | Play / Add |
@@ -138,15 +145,19 @@ Lyrics come from [lrclib.net](https://lrclib.net) (no account needed) and are ca
 
 ```text
 termix/
-├── cmd/
-├── config/
+├── cmd/                  entry point, `termix auth`
+├── config.example.toml   copy to config.toml and fill in
 └── internal/
-    ├── app/
-    ├── auth/
-    ├── lyrics/
-    ├── player/
-    ├── queue/
-    └── source/
+    ├── app/              Bubble Tea UI
+    ├── config/           config.toml loading
+    ├── queue/            shared track queue
+    ├── player/           mpv and spotifyd backends, router
+    ├── spotify/          OAuth and search
+    ├── youtube/          yt-dlp search
+    ├── local/            local file search
+    ├── lastfm/           similar-track lookups
+    ├── recommend/        smart shuffle picks
+    └── lyrics/           lrclib.net lyrics
 ```
 
 ---

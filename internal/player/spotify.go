@@ -3,7 +3,6 @@ package player
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	zspotify "github.com/zmb3/spotify/v2"
@@ -16,13 +15,16 @@ import (
 // job is to tell Spotify's servers what that device should do, via the
 // Web API's /me/player/* endpoints.
 type SpotifyPlayer struct {
-	client    *zspotify.Client
-	deviceID  zspotify.ID
-	hasDevice bool
+	client     *zspotify.Client
+	deviceName string // exact Connect device name from config; "" auto-detects
+	deviceID   zspotify.ID
+	hasDevice  bool
 }
 
-func NewSpotifyPlayer(client *zspotify.Client) *SpotifyPlayer {
-	return &SpotifyPlayer{client: client}
+// NewSpotifyPlayer controls the Connect device called deviceName
+// (spotify.device in config.toml), or auto-detects spotifyd when it is empty.
+func NewSpotifyPlayer(client *zspotify.Client, deviceName string) *SpotifyPlayer {
+	return &SpotifyPlayer{client: client, deviceName: deviceName}
 }
 
 // ensureDevice finds spotifyd's Connect device and caches its ID.
@@ -34,7 +36,7 @@ func (s *SpotifyPlayer) ensureDevice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing spotify devices: %w", err)
 	}
-	dev, err := pickDevice(devices, os.Getenv("TERMIX_SPOTIFY_DEVICE"))
+	dev, err := pickDevice(devices, s.deviceName)
 	if err != nil {
 		return err
 	}
@@ -81,7 +83,7 @@ func pickDevice(devices []zspotify.PlayerDevice, want string) (zspotify.PlayerDe
 		return usable[0], nil
 	}
 
-	return zspotify.PlayerDevice{}, fmt.Errorf("can't tell which Spotify device is spotifyd (saw %s) — set TERMIX_SPOTIFY_DEVICE to its name", describeDevices(usable))
+	return zspotify.PlayerDevice{}, fmt.Errorf("can't tell which Spotify device is spotifyd (saw %s) — set spotify.device in config.toml to its name", describeDevices(usable))
 }
 
 func single(devices []zspotify.PlayerDevice, keep func(zspotify.PlayerDevice) bool) (zspotify.PlayerDevice, bool) {
