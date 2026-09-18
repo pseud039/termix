@@ -26,12 +26,13 @@ type ErrorMsg struct{ Err error }
 type TrackStartMsg struct{ Item queue.Item }
 
 // QueueAdvanceMsg moves to the next queue item after mpv reports that the
-// current track ended ("eof") or failed ("error").
-type QueueAdvanceMsg struct{}
+// current track ended ("eof") or failed ("error"). Failed is true for the
+// latter so repeat-one doesn't replay a broken track.
+type QueueAdvanceMsg struct{ Failed bool }
 
 // queueEndedMsg is sent when the last track finishes and there is nothing
-// left to play.
-type queueEndedMsg struct{}
+// left to play. Reason, when set, replaces the default status line.
+type queueEndedMsg struct{ Reason string }
 
 // mpvEventMsg wraps an event read from the mpv events channel.
 type mpvEventMsg struct{ ev player.MpvEvent }
@@ -85,6 +86,7 @@ type Model struct {
 	currentTrack queue.Item
 	hasTrack     bool
 	autoStarting bool // a track added to an idle queue is being started
+	failStreak   int  // consecutive tracks mpv failed to play; reset on success or a manual play
 
 	// Whether mpv started successfully — gates playback-related UI hints
 	mpvReady bool
@@ -196,15 +198,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.Item.Artist, msg.Item.Title, msg.Item.Source)
 
 	case QueueAdvanceMsg:
-		return m, m.advanceQueueCmd()
+		return m, m.advanceQueueCmd(msg.Failed)
 
 	case queueEndedMsg:
 		m.hasTrack = false
 		m.currentTrack = queue.Item{}
 		m.duration = 0
 		m.position = 0
-		m.statusIsErr = false
-		m.statusMsg = "end of queue — add more tracks from [2] Search"
+		m.statusIsErr = msg.Reason != ""
+		m.statusMsg = msg.Reason
+		if m.statusMsg == "" {
+			m.statusMsg = "end of queue — add more tracks from [2] Search"
+		}
 
 	case mpvEventMsg:
 		// Keep listening; see waitForMpvEventCmd.
@@ -215,11 +220,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "end-file":
 			switch msg.ev.Reason {
 			case "eof":
+				m.failStreak = 0
 				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{} })
 			case "error":
+				m.failStreak++
+				// With repeat on, a queue where nothing plays would cycle
+				// forever, so give up once every track has failed in a row.
+				if m.failStreak >= m.queue.Len() {
+					m.failStreak = 0
+					cmds = append(cmds, func() tea.Msg {
+						return queueEndedMsg{Reason: "mpv: every track failed to play, stopping"}
+					})
+					break
+				}
 				m.statusMsg = "mpv: error playing track, skipping"
 				m.statusIsErr = true
-				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{} })
+				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{Failed: true} })
 			}
 			// "stop" and "quit" come from skipping or shutting down, not a
 			// track finishing, so they must not advance the queue.
@@ -278,8 +294,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		return m, m.togglePauseCmd()
 	case "n":
+		m.failStreak = 0
 		return m, m.nextTrackCmd()
 	case "p":
+		m.failStreak = 0
 		return m, m.prevTrackCmd()
 	case "right", "l":
 		return m, m.seekCmd(+10)
@@ -289,6 +307,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.changeVolume(+5)
 	case "-":
 		return m.changeVolume(-5)
+
+	case "z":
+		m.statusIsErr = false
+		if m.queue.ToggleShuffle() {
+			m.statusMsg = "shuffle on"
+		} else {
+			m.statusMsg = "shuffle off"
+		}
+	case "r":
+		m.statusIsErr = false
+		m.statusMsg = "repeat: " + m.queue.CycleRepeat().String()
 
 	case "/":
 		if m.activeTab == tabSearch {
@@ -308,18 +337,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		switch m.activeTab {
 		case tabQueue:
+			m.failStreak = 0
 			return m, m.playCurrentQueueItemCmd()
 		case tabSearch:
 			if m.searchCursor < len(m.searchResults) {
 				item := m.searchResults[m.searchCursor]
-				m.queue.Add(item)
+				// With shuffle on the item lands somewhere in the upcoming
+				// part of the queue rather than at the end.
+				idx := m.queue.Add(item)
 				m.statusIsErr = false
 				m.statusMsg = fmt.Sprintf("added to queue: %s — %s", item.Artist, item.Title)
 				// Nothing playing (empty queue, or the queue ran out): start
 				// the track just added instead of waiting for [n].
 				if !m.hasTrack && !m.autoStarting {
 					m.autoStarting = true
-					m.queue.JumpTo(m.queue.Len() - 1)
+					m.failStreak = 0
+					m.queue.JumpTo(idx)
 					return m, m.playCurrentQueueItemCmd()
 				}
 			}
@@ -553,9 +586,18 @@ func (m Model) playCurrentQueueItemCmd() tea.Cmd {
 	}
 }
 
-func (m Model) advanceQueueCmd() tea.Cmd {
+// advanceQueueCmd picks what plays after a track ends on its own. A track
+// that finished normally honours repeat-one; one that failed always moves
+// on so a bad URI can't loop.
+func (m Model) advanceQueueCmd(failed bool) tea.Cmd {
 	return func() tea.Msg {
-		item, ok := m.queue.Next()
+		var item queue.Item
+		var ok bool
+		if failed {
+			item, ok = m.queue.Next()
+		} else {
+			item, ok = m.queue.Advance()
+		}
 		if !ok {
 			return queueEndedMsg{}
 		}

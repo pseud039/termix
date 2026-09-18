@@ -119,6 +119,8 @@ go run ./cmd
 | `n` / `p` | Next / Previous |
 | `←` `→` | Seek |
 | `+` `-` | Volume |
+| `z` | Shuffle on / off |
+| `r` | Repeat off → all → one |
 | `/` | Search |
 | `Enter` | Play / Add |
 | `Shift+Enter` | Insert next |

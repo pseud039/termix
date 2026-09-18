@@ -74,7 +74,7 @@ func (m Model) renderHeader() string {
 
 	right := lipgloss.NewStyle().
 		Foreground(colMuted).
-		Render("[1-3] tabs  [space] play/pause  [n/p] next/prev  [q] quit")
+		Render("[1-3] tabs  [space] play/pause  [n/p] next/prev  [z/r] shuffle/repeat  [q] quit")
 
 	gap := m.width - lipgloss.Width(title) - lipgloss.Width(tabRow) - lipgloss.Width(right)
 	if gap < 0 {
@@ -163,6 +163,7 @@ func (m Model) renderPlayerBar() string {
 
 	right := lipgloss.JoinHorizontal(lipgloss.Center,
 		lipgloss.NewStyle().Foreground(colAccent2).Render(volStr),
+		lipgloss.NewStyle().PaddingLeft(2).Render(m.renderModeBadges()),
 		lipgloss.NewStyle().Foreground(colMuted).PaddingLeft(2).Render("[±] vol  [←→] seek"),
 	)
 
@@ -195,6 +196,30 @@ func (m Model) renderPlayerBar() string {
 		Width(w).
 		Padding(0, 1).
 		Render(row)
+}
+
+// renderModeBadges shows the shuffle and repeat state: lit in the accent
+// colour when on, dimmed when off.
+func (m Model) renderModeBadges() string {
+	on := lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	off := lipgloss.NewStyle().Foreground(colMuted)
+
+	shuffle := off.Render("⇄")
+	if m.queue.Shuffle() {
+		shuffle = on.Render("⇄ shuffle")
+	}
+
+	var repeat string
+	switch m.queue.Repeat() {
+	case queue.RepeatAll:
+		repeat = on.Render("↻ all")
+	case queue.RepeatOne:
+		repeat = on.Render("↻ one")
+	default:
+		repeat = off.Render("↻")
+	}
+
+	return shuffle + "  " + repeat
 }
 
 func (m Model) renderStatus() string {
