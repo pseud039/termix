@@ -87,7 +87,7 @@ choco install mpvio yt-dlp
 
 Termix looks for `mpv.exe` on your `PATH`, then next to `termix.exe`, then in the default Scoop and Chocolatey folders. YouTube playback also needs `yt-dlp` on your `PATH` (or next to `mpv.exe`). If mpv can't be found, Termix still starts and shows an install hint in the status line.
 
-Install `spotifyd` separately.
+Install `spotifyd` separately. Termix picks the spotifyd Spotify Connect device automatically (by its `spotifyd@...` name, or failing that by its "Speaker" type), so your phone or desktop app being online doesn't matter. If it still can't tell, set `TERMIX_SPOTIFY_DEVICE` to the exact device name.
 
 Set Spotify credentials:
 

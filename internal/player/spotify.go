@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	zspotify "github.com/zmb3/spotify/v2"
 
@@ -25,9 +26,6 @@ func NewSpotifyPlayer(client *zspotify.Client) *SpotifyPlayer {
 }
 
 // ensureDevice finds spotifyd's Connect device and caches its ID.
-// If you have more than one Spotify Connect device visible (phone,
-// desktop app, another spotifyd instance), set TERMIX_SPOTIFY_DEVICE to
-// the exact device name to disambiguate.
 func (s *SpotifyPlayer) ensureDevice(ctx context.Context) error {
 	if s.hasDevice {
 		return nil
@@ -36,32 +34,74 @@ func (s *SpotifyPlayer) ensureDevice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing spotify devices: %w", err)
 	}
-	if len(devices) == 0 {
-		return fmt.Errorf("no Spotify Connect devices found — is spotifyd running?")
+	dev, err := pickDevice(devices, os.Getenv("TERMIX_SPOTIFY_DEVICE"))
+	if err != nil {
+		return err
 	}
-
-	if want := os.Getenv("TERMIX_SPOTIFY_DEVICE"); want != "" {
-		for _, d := range devices {
-			if d.Name == want {
-				s.deviceID = d.ID
-				s.hasDevice = true
-				return nil
-			}
-		}
-		return fmt.Errorf("no Spotify device named %q found", want)
-	}
-
-	if len(devices) > 1 {
-		names := make([]string, len(devices))
-		for i, d := range devices {
-			names[i] = d.Name
-		}
-		return fmt.Errorf("multiple Spotify devices found %v — set TERMIX_SPOTIFY_DEVICE to pick one", names)
-	}
-
-	s.deviceID = devices[0].ID
+	s.deviceID = dev.ID
 	s.hasDevice = true
 	return nil
+}
+
+func pickDevice(devices []zspotify.PlayerDevice, want string) (zspotify.PlayerDevice, error) {
+	if len(devices) == 0 {
+		return zspotify.PlayerDevice{}, fmt.Errorf("no Spotify Connect devices found — is spotifyd running?")
+	}
+
+	if want != "" {
+		for _, d := range devices {
+			if strings.EqualFold(d.Name, want) {
+				return d, nil
+			}
+		}
+		return zspotify.PlayerDevice{}, fmt.Errorf("no Spotify device named %q found (saw %s)", want, describeDevices(devices))
+	}
+
+	var usable []zspotify.PlayerDevice
+	for _, d := range devices {
+		if !d.Restricted {
+			usable = append(usable, d)
+		}
+	}
+	if len(usable) == 0 {
+		return zspotify.PlayerDevice{}, fmt.Errorf("all Spotify devices are restricted (saw %s)", describeDevices(devices))
+	}
+
+	if d, ok := single(usable, func(d zspotify.PlayerDevice) bool {
+		return strings.Contains(strings.ToLower(d.Name), "spotifyd")
+	}); ok {
+		return d, nil
+	}
+	if d, ok := single(usable, func(d zspotify.PlayerDevice) bool {
+		return strings.EqualFold(d.Type, "Speaker")
+	}); ok {
+		return d, nil
+	}
+	if len(usable) == 1 {
+		return usable[0], nil
+	}
+
+	return zspotify.PlayerDevice{}, fmt.Errorf("can't tell which Spotify device is spotifyd (saw %s) — set TERMIX_SPOTIFY_DEVICE to its name", describeDevices(usable))
+}
+
+func single(devices []zspotify.PlayerDevice, keep func(zspotify.PlayerDevice) bool) (zspotify.PlayerDevice, bool) {
+	var found zspotify.PlayerDevice
+	n := 0
+	for _, d := range devices {
+		if keep(d) {
+			found = d
+			n++
+		}
+	}
+	return found, n == 1
+}
+
+func describeDevices(devices []zspotify.PlayerDevice) string {
+	parts := make([]string, len(devices))
+	for i, d := range devices {
+		parts[i] = fmt.Sprintf("%q (%s)", d.Name, d.Type)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *SpotifyPlayer) opts() *zspotify.PlayOptions {
