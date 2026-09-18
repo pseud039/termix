@@ -69,6 +69,31 @@ type Item struct {
 	// CoverURL is a remote image URL we can fetch for album art.
 	// Empty string = no art available.
 	CoverURL string
+
+	// Recommended marks an item smart shuffle injected rather than one the
+	// user queued. Unplayed recommendations are dropped when smart shuffle
+	// is turned off.
+	Recommended bool
+}
+
+// ShuffleMode says how the upcoming items are ordered.
+type ShuffleMode int
+
+const (
+	ShuffleOff   ShuffleMode = iota // play in insertion order
+	ShuffleOn                       // upcoming items randomised
+	ShuffleSmart                    // randomised plus similar tracks injected
+)
+
+func (s ShuffleMode) String() string {
+	switch s {
+	case ShuffleOn:
+		return "on"
+	case ShuffleSmart:
+		return "smart"
+	default:
+		return "off"
+	}
 }
 
 // entry is an Item plus the order it was added in, so shuffle can be undone
@@ -89,7 +114,7 @@ type Queue struct {
 	entries []entry
 	current int // index of the playing entry; -1 = nothing playing
 	nextSeq uint64
-	shuffle bool
+	shuffle ShuffleMode
 	repeat  RepeatMode
 	rng     *rand.Rand
 }
@@ -120,7 +145,7 @@ func (q *Queue) Add(item Item) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	e := q.stamp(item)
-	if !q.shuffle {
+	if q.shuffle == ShuffleOff {
 		q.entries = append(q.entries, e)
 		return len(q.entries) - 1
 	}
@@ -180,7 +205,7 @@ func (q *Queue) next() (Item, bool) {
 	if q.repeat != RepeatAll || len(q.entries) == 0 {
 		return Item{}, false
 	}
-	if q.shuffle {
+	if q.shuffle != ShuffleOff {
 		q.shuffleFrom(0)
 	}
 	q.current = 0
@@ -277,38 +302,68 @@ func (q *Queue) Clear() {
 	q.current = -1
 }
 
-// Shuffle reports whether shuffle is on.
+// Shuffle reports whether shuffle is on (plain or smart).
 func (q *Queue) Shuffle() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	return q.shuffle != ShuffleOff
+}
+
+// ShuffleMode returns the current shuffle mode.
+func (q *Queue) ShuffleMode() ShuffleMode {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	return q.shuffle
 }
 
-// ToggleShuffle flips shuffle and returns the new state.
+// ToggleShuffle flips between off and plain shuffle and reports whether
+// shuffle is now on. Smart shuffle counts as on and toggles to off.
 func (q *Queue) ToggleShuffle() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.setShuffle(!q.shuffle)
-	return q.shuffle
+	if q.shuffle == ShuffleOff {
+		q.setShuffleMode(ShuffleOn)
+	} else {
+		q.setShuffleMode(ShuffleOff)
+	}
+	return q.shuffle != ShuffleOff
 }
 
-// SetShuffle turns shuffle on or off. Turning it on randomises the items
-// after the cursor (the current item and everything already played stay
-// put). Turning it off restores insertion order with the cursor still on
-// the same item.
+// SetShuffle turns plain shuffle on or off. See SetShuffleMode.
 func (q *Queue) SetShuffle(on bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.setShuffle(on)
+	if on {
+		q.setShuffleMode(ShuffleOn)
+	} else {
+		q.setShuffleMode(ShuffleOff)
+	}
 }
 
-func (q *Queue) setShuffle(on bool) {
-	if on == q.shuffle {
+// SetShuffleMode switches shuffle mode. Going from off to on or smart
+// randomises the items after the cursor (the current item and everything
+// already played stay put). Switching between on and smart keeps the
+// order. Leaving smart drops the recommended items that haven't played.
+// Going to off restores insertion order with the cursor on the same item.
+func (q *Queue) SetShuffleMode(mode ShuffleMode) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.setShuffleMode(mode)
+}
+
+func (q *Queue) setShuffleMode(mode ShuffleMode) {
+	if mode == q.shuffle {
 		return
 	}
-	q.shuffle = on
-	if on {
-		q.shuffleFrom(q.current + 1)
+	was := q.shuffle
+	q.shuffle = mode
+	if was == ShuffleSmart {
+		q.removeRecommendedUpcoming()
+	}
+	if mode != ShuffleOff {
+		if was == ShuffleOff {
+			q.shuffleFrom(q.current + 1)
+		}
 		return
 	}
 	var cur uint64
@@ -349,6 +404,67 @@ func (q *Queue) shuffleFrom(from int) {
 			return
 		}
 	}
+}
+
+// InsertRecommended spreads smart-shuffle recommendations evenly through
+// the items that haven't played yet, so they don't clump together or all
+// land at the end. It returns the play-order index of the first one, so a
+// caller with nothing playing can start from it.
+func (q *Queue) InsertRecommended(items []Item) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	lo := q.current + 1
+	if lo > len(q.entries) {
+		lo = len(q.entries)
+	}
+	first := -1
+	n := len(items)
+	for k, item := range items {
+		item.Recommended = true
+		// Each insert shifts what follows, so recompute against the
+		// current length: the k-th of n goes about (k+1)/(n+1) of the way in.
+		span := len(q.entries) - lo
+		i := lo + (k+1)*span/(n+1)
+		if i > len(q.entries) {
+			i = len(q.entries)
+		}
+		q.insertAt(i, q.stamp(item))
+		if first < 0 || i < first {
+			first = i
+		}
+	}
+	return first
+}
+
+// removeRecommendedUpcoming drops recommended items after the cursor.
+// Played ones stay as history and the cursor never moves.
+func (q *Queue) removeRecommendedUpcoming() {
+	lo := q.current + 1
+	if lo >= len(q.entries) {
+		return
+	}
+	kept := q.entries[:lo]
+	for _, e := range q.entries[lo:] {
+		if !e.item.Recommended {
+			kept = append(kept, e)
+		}
+	}
+	q.entries = kept
+}
+
+// UpcomingCounts reports how many items after the cursor the user queued
+// themselves and how many are smart-shuffle recommendations.
+func (q *Queue) UpcomingCounts() (own, recommended int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i := q.current + 1; i < len(q.entries); i++ {
+		if q.entries[i].item.Recommended {
+			recommended++
+		} else {
+			own++
+		}
+	}
+	return own, recommended
 }
 
 // inAddOrder reports whether entries are in the order they were added.

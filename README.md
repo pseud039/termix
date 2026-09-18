@@ -119,7 +119,7 @@ go run ./cmd
 | `n` / `p` | Next / Previous |
 | `←` `→` | Seek |
 | `+` `-` | Volume |
-| `z` | Shuffle on / off |
+| `z` | Shuffle off → on → smart (smart needs `LASTFM_API_KEY`) |
 | `r` | Repeat off → all → one |
 | `/` | Search |
 | `Enter` | Play / Add |
@@ -155,7 +155,6 @@ termix/
 - Synced lyrics
 - Queue persistence
 - Album artwork (Kitty graphics protocol)
-- Smart Shuffle support
 
 ---
 

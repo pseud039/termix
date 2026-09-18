@@ -204,9 +204,14 @@ func (m Model) renderModeBadges() string {
 	on := lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	off := lipgloss.NewStyle().Foreground(colMuted)
 
-	shuffle := off.Render("⇄")
-	if m.queue.Shuffle() {
+	var shuffle string
+	switch m.queue.ShuffleMode() {
+	case queue.ShuffleOn:
 		shuffle = on.Render("⇄ shuffle")
+	case queue.ShuffleSmart:
+		shuffle = on.Render("⇄ smart")
+	default:
+		shuffle = off.Render("⇄")
 	}
 
 	var repeat string
@@ -281,7 +286,12 @@ func (m Model) renderQueue(height int) string {
 		isActive := i == current
 
 		num := lipgloss.NewStyle().Foreground(colMuted).Render(fmt.Sprintf("%-4d", i+1))
-		title := truncate(item.Title, 36)
+		title := item.Title
+		if item.Recommended {
+			// Smart-shuffle pick, not something the user queued.
+			title = "✦ " + title
+		}
+		title = truncate(title, 36)
 		artist := truncate(item.Artist, 24)
 		dur := formatLength(item.Duration)
 

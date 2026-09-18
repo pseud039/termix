@@ -10,9 +10,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/pseud039/termix/internal/app"
+	"github.com/pseud039/termix/internal/lastfm"
 	"github.com/pseud039/termix/internal/local"
 	"github.com/pseud039/termix/internal/player"
 	"github.com/pseud039/termix/internal/queue"
+	"github.com/pseud039/termix/internal/recommend"
 	spotifyclient "github.com/pseud039/termix/internal/spotify"
 	"github.com/pseud039/termix/internal/youtube"
 )
@@ -55,6 +57,19 @@ func main() {
 	}
 	searchers[queue.SourceLocal] = local.NewSearchProvider(musicDir())
 
+	// Smart shuffle needs a Last.fm key. Without one the z key skips the
+	// smart mode and the status line says how to enable it.
+	var recommender *recommend.Recommender
+	if lfm, err := lastfm.NewClient(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: smart shuffle off (%v)\n", err)
+	} else {
+		resolvers := map[queue.SourceType]recommend.Searcher{}
+		for src, s := range searchers {
+			resolvers[src] = s
+		}
+		recommender = recommend.New(lfm, resolvers)
+	}
+
 	// A failed mpv start is not fatal: the TUI still runs and shows the error
 	// in the status line; only local/YouTube playback is unavailable.
 	mpvErr := mpv.Start(ctx)
@@ -62,7 +77,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", mpvErr)
 	}
 
-	model := app.New(ctx, q, router, mpv, mpvErr, searchers)
+	model := app.New(ctx, q, router, mpv, mpvErr, searchers, recommender)
 
 	p := tea.NewProgram(
 		model,

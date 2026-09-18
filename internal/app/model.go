@@ -11,6 +11,7 @@ import (
 
 	"github.com/pseud039/termix/internal/player"
 	"github.com/pseud039/termix/internal/queue"
+	"github.com/pseud039/termix/internal/recommend"
 )
 
 // TickMsg fires every second from the tea.Tick loop.
@@ -51,6 +52,19 @@ type searchResultsMsg struct {
 	err   error
 }
 
+// recommendationsMsg carries smart-shuffle picks for the queue. seq works
+// like searchResultsMsg.seq: a fetch started before smart shuffle was
+// switched off (or before a newer fetch) is ignored.
+type recommendationsMsg struct {
+	seq   int
+	items []queue.Item
+	err   error
+}
+
+// recommendationTimeout bounds one smart-shuffle fetch: a Last.fm call
+// plus a search per pick, and yt-dlp searches take several seconds each.
+const recommendationTimeout = 90 * time.Second
+
 type tab int
 
 const (
@@ -69,6 +83,12 @@ type Model struct {
 	mpv       *player.MpvPlayer
 	searchers map[queue.SourceType]Searcher // a source is missing when it isn't available
 	ctx       context.Context
+
+	// Smart shuffle. recommender is nil without a Last.fm key, which makes
+	// the smart mode unavailable.
+	recommender *recommend.Recommender
+	recFetching bool // a recommendation fetch is in flight
+	recSeq      int  // identifies the fetch whose answer we still want
 
 	// TUI layout
 	activeTab   tab
@@ -106,13 +126,15 @@ type Model struct {
 // New builds the Model. mpvErr is the result of mpv.Start; when non-nil it is
 // shown in the status line so the user sees why local/YouTube playback is off.
 // searchers holds one Searcher per available source; the Search tab explains
-// how to enable any that are missing.
-func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher) Model {
+// how to enable any that are missing. recommender may be nil, in which case
+// smart shuffle is unavailable and z only toggles plain shuffle.
+func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher, recommender *recommend.Recommender) Model {
 	m := Model{
 		queue:        q,
 		router:       r,
 		mpv:          mpv,
 		searchers:    searchers,
+		recommender:  recommender,
 		searchSource: queue.SourceSpotify,
 		ctx:          ctx,
 		volume:       -1,
@@ -196,6 +218,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusIsErr = false
 		m.statusMsg = fmt.Sprintf("playing: %s — %s [%s]",
 			msg.Item.Artist, msg.Item.Title, msg.Item.Source)
+		// With smart shuffle on, keep the upcoming list topped up with
+		// similar tracks, seeded on whatever just started.
+		return m.topUpRecommendations(msg.Item)
 
 	case QueueAdvanceMsg:
 		return m, m.advanceQueueCmd(msg.Failed)
@@ -208,7 +233,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusIsErr = msg.Reason != ""
 		m.statusMsg = msg.Reason
 		if m.statusMsg == "" {
-			m.statusMsg = "end of queue — add more tracks from [2] Search"
+			if m.queue.ShuffleMode() == queue.ShuffleSmart && m.recFetching {
+				// The radio fetch is still running; it starts playback
+				// itself when the picks arrive.
+				m.statusMsg = "end of queue — finding similar tracks…"
+			} else {
+				m.statusMsg = "end of queue — add more tracks from [2] Search"
+			}
 		}
 
 	case mpvEventMsg:
@@ -254,6 +285,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchResults = msg.items
 		m.searchCursor = 0
 		m.searchErr = msg.err
+
+	case recommendationsMsg:
+		if msg.seq != m.recSeq {
+			return m, nil
+		}
+		m.recFetching = false
+		if m.queue.ShuffleMode() != queue.ShuffleSmart {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.statusMsg = "smart shuffle: " + msg.err.Error()
+			m.statusIsErr = true
+			return m, nil
+		}
+		if len(msg.items) == 0 {
+			m.statusMsg = "smart shuffle: no playable similar tracks found"
+			m.statusIsErr = true
+			return m, nil
+		}
+		idx := m.queue.InsertRecommended(msg.items)
+		m.statusIsErr = false
+		m.statusMsg = fmt.Sprintf("smart shuffle: added %d similar track%s", len(msg.items), plural(len(msg.items)))
+		// The queue ran dry while we were fetching: start the first pick
+		// rather than sit silent, the same way the Search tab does.
+		if !m.hasTrack && !m.autoStarting {
+			m.autoStarting = true
+			m.failStreak = 0
+			m.queue.JumpTo(idx)
+			return m, m.playCurrentQueueItemCmd()
+		}
 
 	case ErrorMsg:
 		m.autoStarting = false
@@ -309,12 +370,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.changeVolume(-5)
 
 	case "z":
-		m.statusIsErr = false
-		if m.queue.ToggleShuffle() {
-			m.statusMsg = "shuffle on"
-		} else {
-			m.statusMsg = "shuffle off"
-		}
+		return m.cycleShuffle()
 	case "r":
 		m.statusIsErr = false
 		m.statusMsg = "repeat: " + m.queue.CycleRepeat().String()
@@ -459,6 +515,92 @@ func (m Model) searchCmd(seq int, searcher Searcher, query string) tea.Cmd {
 		items, err := searcher.Search(ctx, query)
 		return searchResultsMsg{seq: seq, items: items, err: err}
 	}
+}
+
+// cycleShuffle steps off → shuffle → smart → off on z. Smart shuffle is
+// skipped when there is no recommender (no Last.fm key).
+func (m Model) cycleShuffle() (tea.Model, tea.Cmd) {
+	m.statusIsErr = false
+	switch m.queue.ShuffleMode() {
+	case queue.ShuffleOff:
+		m.queue.SetShuffleMode(queue.ShuffleOn)
+		m.statusMsg = "shuffle on"
+
+	case queue.ShuffleOn:
+		if m.recommender == nil {
+			m.queue.SetShuffleMode(queue.ShuffleOff)
+			m.statusMsg = "shuffle off — smart shuffle needs LASTFM_API_KEY in .env (free key at last.fm/api)"
+			m.statusIsErr = true
+			return m, nil
+		}
+		m.queue.SetShuffleMode(queue.ShuffleSmart)
+		m.statusMsg = "smart shuffle on — finding similar tracks…"
+		seed, ok := m.currentTrack, m.hasTrack
+		if !ok {
+			// Nothing playing: seed on the last thing the user queued.
+			if items := m.queue.Items(); len(items) > 0 {
+				seed, ok = items[len(items)-1], true
+			}
+		}
+		if !ok {
+			m.statusMsg = "smart shuffle on — add a track to seed recommendations"
+			return m, nil
+		}
+		return m.topUpRecommendations(seed)
+
+	default: // smart
+		m.queue.SetShuffleMode(queue.ShuffleOff)
+		m.statusMsg = "shuffle off"
+		// Drop the answer of any fetch still running.
+		m.recSeq++
+		m.recFetching = false
+	}
+	return m, nil
+}
+
+// topUpRecommendations fetches more smart-shuffle picks when the upcoming
+// list is short on them: about one per three tracks the user queued, and a
+// batch of three when the seed is the last track so playback keeps going.
+func (m Model) topUpRecommendations(seed queue.Item) (tea.Model, tea.Cmd) {
+	if m.recommender == nil || m.recFetching || m.queue.ShuffleMode() != queue.ShuffleSmart {
+		return m, nil
+	}
+	own, recs := m.queue.UpcomingCounts()
+	want := own / 3
+	if want < 1 {
+		want = 1
+	}
+	if own+recs == 0 {
+		want = 3
+	}
+	if want -= recs; want <= 0 {
+		return m, nil
+	}
+	m.recSeq++
+	m.recFetching = true
+	return m, m.fetchRecommendationsCmd(m.recSeq, seed, want)
+}
+
+// fetchRecommendationsCmd asks the recommender for n picks similar to seed,
+// skipping anything already in the queue.
+func (m Model) fetchRecommendationsCmd(seq int, seed queue.Item, n int) tea.Cmd {
+	exclude := map[string]bool{}
+	for _, it := range m.queue.Items() {
+		exclude[recommend.Key(it.Artist, it.Title)] = true
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, recommendationTimeout)
+		defer cancel()
+		items, err := m.recommender.ForSeed(ctx, seed, exclude, n)
+		return recommendationsMsg{seq: seq, items: items, err: err}
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // pollPlaybackCmd asks the active player for its position and duration.

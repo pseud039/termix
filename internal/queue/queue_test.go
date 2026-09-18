@@ -293,3 +293,127 @@ func TestRepeatAllWrapNeverInAddOrder(t *testing.T) {
 		}
 	}
 }
+
+// recs returns n recommended items "r0".."r{n-1}".
+func recs(n int) []Item {
+	out := make([]Item, n)
+	for i := range out {
+		out[i] = Item{ID: fmt.Sprintf("r%d", i)}
+	}
+	return out
+}
+
+func TestInsertRecommendedLandsUpcomingAndSpreads(t *testing.T) {
+	q := newTestQueue(7) // t0..t6
+	q.JumpTo(1)          // t0 played, t1 current, t2..t6 upcoming
+	first := q.InsertRecommended(recs(2))
+
+	items := q.Items()
+	if items[0].ID != "t0" || items[1].ID != "t1" || q.CurrentIndex() != 1 {
+		t.Fatalf("played/current disturbed: %v cur=%d", ids(items), q.CurrentIndex())
+	}
+	var recIdx []int
+	for i, it := range items {
+		if it.Recommended {
+			recIdx = append(recIdx, i)
+		}
+	}
+	if len(recIdx) != 2 || recIdx[0] != first {
+		t.Fatalf("recommended at %v, first=%d", recIdx, first)
+	}
+	if recIdx[1]-recIdx[0] < 2 {
+		t.Errorf("recommendations adjacent: %v in %v", recIdx, ids(items))
+	}
+	if recIdx[0] <= 1 {
+		t.Errorf("recommendation landed at or before the cursor: %v", ids(items))
+	}
+	if own, rec := q.UpcomingCounts(); own != 5 || rec != 2 {
+		t.Errorf("UpcomingCounts = %d, %d", own, rec)
+	}
+}
+
+func TestInsertRecommendedIntoEmptyQueue(t *testing.T) {
+	q := New()
+	first := q.InsertRecommended(recs(3))
+	if first != 0 || q.Len() != 3 {
+		t.Fatalf("first=%d len=%d", first, q.Len())
+	}
+	if _, ok := q.JumpTo(first); !ok {
+		t.Fatal("cannot jump to first recommendation")
+	}
+}
+
+func TestSetShuffleModeOffFromSmartDropsUpcomingRecommended(t *testing.T) {
+	q := newTestQueue(6)
+	q.JumpTo(0)
+	q.SetShuffleMode(ShuffleSmart)
+	q.InsertRecommended(recs(2))
+	if q.ShuffleMode() != ShuffleSmart || !q.Shuffle() {
+		t.Fatal("mode not smart")
+	}
+
+	// Play through until a recommendation has been played.
+	for {
+		cur, _ := q.Current()
+		if cur.Recommended {
+			break
+		}
+		if _, ok := q.Next(); !ok {
+			t.Fatal("never reached a recommendation")
+		}
+	}
+	playedRec, _ := q.Current()
+
+	q.SetShuffleMode(ShuffleOff)
+
+	items := q.Items()
+	cur, _ := q.Current()
+	if cur.ID != playedRec.ID {
+		t.Errorf("cursor moved: was %s now %s", playedRec.ID, cur.ID)
+	}
+	var recCount int
+	var own []Item
+	for _, it := range items {
+		if it.Recommended {
+			recCount++
+		} else {
+			own = append(own, it)
+		}
+	}
+	if recCount != 1 {
+		t.Errorf("want only the played recommendation kept, got %d in %v", recCount, ids(items))
+	}
+	if !equal(ids(own), []string{"t0", "t1", "t2", "t3", "t4", "t5"}) {
+		t.Errorf("own items not in add order: %v", ids(own))
+	}
+}
+
+func TestSmartToOnKeepsOrderDropsRecs(t *testing.T) {
+	q := newTestQueue(6)
+	q.JumpTo(0)
+	q.SetShuffleMode(ShuffleOn)
+	shuffled := ids(q.Items())
+	q.SetShuffleMode(ShuffleSmart)
+	if !equal(ids(q.Items()), shuffled) {
+		t.Fatal("on -> smart changed the order")
+	}
+	q.InsertRecommended(recs(2))
+	q.SetShuffleMode(ShuffleOn)
+	if !equal(ids(q.Items()), shuffled) {
+		t.Errorf("smart -> on: %v, want %v", ids(q.Items()), shuffled)
+	}
+	if own, rec := q.UpcomingCounts(); own != 5 || rec != 0 {
+		t.Errorf("UpcomingCounts = %d, %d", own, rec)
+	}
+}
+
+func TestToggleShuffleFromSmartGoesOff(t *testing.T) {
+	q := newTestQueue(3)
+	q.SetShuffleMode(ShuffleSmart)
+	if on := q.ToggleShuffle(); on || q.ShuffleMode() != ShuffleOff {
+		t.Errorf("toggle from smart: on=%v mode=%v", on, q.ShuffleMode())
+	}
+	if on := q.ToggleShuffle(); !on || q.ShuffleMode() != ShuffleOn {
+		t.Errorf("toggle from off: on=%v mode=%v", on, q.ShuffleMode())
+	}
+}
