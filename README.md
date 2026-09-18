@@ -26,17 +26,8 @@ Termix is a keyboard-first TUI music player built with Go and Bubble Tea. Instea
 
 ## Preview
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│ ▶ termix   Queue   Search   Library                  [space] [q]    │
-├─────────────────────────────────────────────────────────────────────┤
-│ ▶ Bohemian Rhapsody         Queen          5:55    [spotify]         │
-│   Never Gonna Give You Up   Rick Astley   3:33    [youtube]         │
-│   Dreams                    Fleetwood...  4:18    [local]           │
-├─────────────────────────────────────────────────────────────────────┤
-│ ⏸ Queen · Bohemian Rhapsody      ━━━━━━━━━━━━━━━━────── 2:14 / 5:55 │
-└─────────────────────────────────────────────────────────────────────┘
-```
+<img width="1516" height="1038" alt="image" src="https://github.com/user-attachments/assets/403d0a7c-cdd0-433f-a255-9f3b788f0044" />
+
 
 ---
 
