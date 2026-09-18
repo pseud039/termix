@@ -10,25 +10,19 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
-// ── Palette ──────────────────────────────────────────────────────────────────
-// Going for a dark terminal aesthetic: dim charcoal bg, green accent,
-// muted grey secondary. Inspired by rmpc's dense info layout.
-
 var (
 	colBg          = lipgloss.Color("#1a1a1a")
 	colSurface     = lipgloss.Color("#242424")
 	colBorder      = lipgloss.Color("#3a3a3a")
 	colMuted       = lipgloss.Color("#666666")
 	colText        = lipgloss.Color("#d4d4d4")
-	colAccent      = lipgloss.Color("#98c379") // green
-	colAccent2     = lipgloss.Color("#61afef") // blue for secondary info
+	colAccent      = lipgloss.Color("#98c379")
+	colAccent2     = lipgloss.Color("#61afef")
 	colWarning     = lipgloss.Color("#e5c07b")
 	colDanger      = lipgloss.Color("#e06c75")
 	colTabActive   = lipgloss.Color("#98c379")
 	colTabInactive = lipgloss.Color("#555555")
 )
-
-// ── Base styles ───────────────────────────────────────────────────────────────
 
 var (
 	styleBase = lipgloss.NewStyle().
@@ -49,8 +43,6 @@ var (
 	styleText = lipgloss.NewStyle().
 			Foreground(colText)
 )
-
-// ── Header (tab bar) ──────────────────────────────────────────────────────────
 
 func (m Model) renderHeader() string {
 	tabs := make([]string, len(tabNames))
@@ -102,8 +94,6 @@ func (m Model) renderHeader() string {
 		Render(row)
 }
 
-// ── Player bar ────────────────────────────────────────────────────────────────
-
 func (m Model) renderPlayerBar() string {
 	w := m.width
 
@@ -116,7 +106,6 @@ func (m Model) renderPlayerBar() string {
 		artist = "—"
 	}
 
-	// Source badge
 	var badge string
 	if m.hasTrack {
 		switch m.currentTrack.Source {
@@ -129,31 +118,33 @@ func (m Model) renderPlayerBar() string {
 		}
 	}
 
-	// Play state indicator
 	playIcon := "▶"
 	if m.playing {
 		playIcon = "⏸"
 	}
 
-	// Progress bar
+	// Track length: prefer what the backend reported (polled every tick),
+	// fall back to whatever the queue item carried.
+	dur := m.duration
+	if dur == 0 {
+		dur = m.currentTrack.Duration
+	}
+
 	var progressBar string
-	if m.hasTrack && m.currentTrack.Duration > 0 {
-		pct := float64(m.position) / float64(m.currentTrack.Duration)
+	if m.hasTrack && dur > 0 {
+		pct := float64(m.position) / float64(dur)
 		progressBar = renderProgressBar(32, pct)
 	} else {
 		progressBar = renderProgressBar(32, 0)
 	}
 
-	// Time display
 	timeStr := fmt.Sprintf("%s / %s",
 		formatDuration(m.position),
-		formatDuration(m.currentTrack.Duration),
+		formatDuration(dur),
 	)
 
-	// Volume
 	volStr := fmt.Sprintf("vol %d%%", m.volume)
 
-	// Left section: icon + track info + badge
 	left := lipgloss.JoinHorizontal(lipgloss.Center,
 		lipgloss.NewStyle().Foreground(colAccent).Bold(true).PaddingRight(2).Render(playIcon),
 		lipgloss.NewStyle().Foreground(colText).Bold(true).PaddingRight(1).Render(truncate(track, 28)),
@@ -162,13 +153,11 @@ func (m Model) renderPlayerBar() string {
 		badge,
 	)
 
-	// Center: progress + time
 	center := lipgloss.JoinHorizontal(lipgloss.Center,
 		progressBar,
 		lipgloss.NewStyle().Foreground(colMuted).PaddingLeft(2).Render(timeStr),
 	)
 
-	// Right: volume + hint
 	right := lipgloss.JoinHorizontal(lipgloss.Center,
 		lipgloss.NewStyle().Foreground(colAccent2).Render(volStr),
 		lipgloss.NewStyle().Foreground(colMuted).PaddingLeft(2).Render("[±] vol  [←→] seek"),
@@ -205,8 +194,6 @@ func (m Model) renderPlayerBar() string {
 		Render(row)
 }
 
-// ── Status bar ────────────────────────────────────────────────────────────────
-
 func (m Model) renderStatus() string {
 	msg := m.statusMsg
 	if msg == "" {
@@ -222,8 +209,6 @@ func (m Model) renderStatus() string {
 		PaddingLeft(1).
 		Render(style.Render(msg))
 }
-
-// ── Content panes ─────────────────────────────────────────────────────────────
 
 func (m Model) renderContent(height int) string {
 	switch m.activeTab {
@@ -303,7 +288,6 @@ func (m Model) renderQueue(height int) string {
 
 		rows = append(rows, row)
 
-		// Don't render more rows than visible height.
 		if len(rows) >= height-2 {
 			break
 		}
@@ -370,8 +354,6 @@ func (m Model) renderLyrics(height int) string {
 		Height(height).
 		Render(body)
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func renderProgressBar(width int, pct float64) string {
 	if pct < 0 {

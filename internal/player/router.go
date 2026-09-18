@@ -8,14 +8,12 @@ import (
 )
 
 // Router wraps the two concrete backends and forwards calls to the
-// one that matches the current item's Source field.
-//
-// For now: Spotify items go to the (stubbed) SpotifyPlayer.
-// YouTube and Local items go to MpvPlayer.
+// one that matches the current item's Source field: Spotify items go to
+// SpotifyPlayer, YouTube and Local items go to MpvPlayer.
 // When switching sources, Router calls Stop() on the outgoing backend.
 type Router struct {
 	mpv     *MpvPlayer
-	spotify Player // nil until Spotify is wired up in a later milestone
+	spotify Player // nil when there is no Spotify login
 
 	active Player // whichever backend is currently playing
 }
@@ -43,8 +41,6 @@ func (r *Router) backendFor(source queue.SourceType) (Player, error) {
 		return nil, fmt.Errorf("unknown source type: %v", source)
 	}
 }
-
-// — Player interface —
 
 func (r *Router) Play(ctx context.Context, item queue.Item) error {
 	backend, err := r.backendFor(item.Source)
@@ -92,6 +88,13 @@ func (r *Router) Position(ctx context.Context) (float64, bool, error) {
 		return 0, false, nil
 	}
 	return r.active.Position(ctx)
+}
+
+func (r *Router) Duration(ctx context.Context) (float64, error) {
+	if r.active == nil {
+		return 0, nil
+	}
+	return r.active.Duration(ctx)
 }
 
 func (r *Router) Stop(ctx context.Context) error {

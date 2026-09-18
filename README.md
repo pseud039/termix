@@ -52,7 +52,7 @@ Termix is a keyboard-first TUI music player built with Go and Bubble Tea. Instea
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.22+
 - mpv
 - yt-dlp
 - spotifyd
@@ -74,6 +74,18 @@ Ubuntu / Debian:
 ```bash
 sudo apt install mpv yt-dlp
 ```
+
+Arch: `sudo pacman -S mpv yt-dlp` · macOS: `brew install mpv yt-dlp`
+
+Windows (native) — with [Scoop](https://scoop.sh) or [Chocolatey](https://chocolatey.org):
+
+```powershell
+scoop install mpv yt-dlp
+# or
+choco install mpvio yt-dlp
+```
+
+Termix looks for `mpv.exe` on your `PATH`, then next to `termix.exe`, then in the default Scoop and Chocolatey folders. YouTube playback also needs `yt-dlp` on your `PATH` (or next to `mpv.exe`). If mpv can't be found, Termix still starts and shows an install hint in the status line.
 
 Install `spotifyd` separately.
 

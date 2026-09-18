@@ -9,9 +9,7 @@ import (
 )
 
 // SearchProvider wraps the Spotify Web API's track search and returns
-// results already boxed as queue.Item — no separate Track type needed,
-// since queue.Item already carries everything the rest of the app cares
-// about (Source, URI, cover art, etc).
+// results as queue.Items.
 type SearchProvider struct {
 	client *zspotify.Client
 }

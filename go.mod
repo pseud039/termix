@@ -3,6 +3,7 @@ module github.com/pseud039/termix
 go 1.22
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/charmbracelet/bubbletea v0.27.1
 	github.com/charmbracelet/lipgloss v0.13.0
 	github.com/zmb3/spotify/v2 v2.4.3

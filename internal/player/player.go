@@ -29,6 +29,11 @@ type Player interface {
 	// playback is active at all (false when stopped/no track).
 	Position(ctx context.Context) (float64, bool, error)
 
+	// Duration returns the total length of the current track in seconds.
+	// Returns 0 when it isn't known yet (idle, or the source is still
+	// resolving the stream).
+	Duration(ctx context.Context) (float64, error)
+
 	// Stop halts playback entirely and releases the track.
 	Stop(ctx context.Context) error
 }
@@ -38,6 +43,7 @@ type Player interface {
 type State struct {
 	Playing  bool
 	Position time.Duration
+	Duration time.Duration // 0 = unknown
 	Volume   int
 	TrackID  string // so the app can detect track changes
 }

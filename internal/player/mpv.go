@@ -16,12 +16,12 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
-const mpvSocketPath = "/tmp/termix-mpv.sock"
+// The IPC address (mpvIPCAddr), how to dial it (dialIPC), cleanup (cleanupIPC),
+// mpv install locations (mpvCandidates) and the install hint (mpvInstallHint)
+// are OS-specific — see mpv_unix.go and mpv_windows.go.
 
 // MpvEvent is what readLoop posts to the Events channel when mpv
 // fires an event (as opposed to a command reply).
-// The rest of the app only needs to know the type and reason — we
-// don't expose raw JSON outside this package.
 type MpvEvent struct {
 	Type   string // "end-file", "start-file", "pause", "unpause", …
 	Reason string // for end-file: "eof" | "stop" | "error" | "quit"
@@ -51,7 +51,7 @@ type MpvPlayer struct {
 	rmu     sync.Mutex
 
 	// events is buffered so readLoop never blocks posting an event even if
-	// Bubbletea is briefly busy. 16 slots is way more than we'll ever need.
+	// Bubbletea is briefly busy.
 	events chan MpvEvent
 }
 
@@ -89,16 +89,13 @@ func (m *MpvPlayer) Start(ctx context.Context) error {
 		return nil // already running
 	}
 
-	// Find the mpv binary. LookPath checks PATH, but we also probe common
-	// locations that package managers (brew, snap, nix, pacman) use and that
-	// might not be on the PATH the Go binary inherits.
 	mpvBin, err := findMpv()
 	if err != nil {
-		return fmt.Errorf("mpv not found — install mpv (brew install mpv / apt install mpv / pacman -S mpv)")
+		return fmt.Errorf("mpv not found — %s", mpvInstallHint)
 	}
 
-	// Remove any stale socket from a previous crash.
-	os.Remove(mpvSocketPath)
+	// Remove any stale socket from a previous crash (no-op on Windows).
+	cleanupIPC()
 
 	// Use context.Background() — NOT the passed-in ctx — so that the mpv
 	// process isn't killed when the app context is cancelled mid-startup.
@@ -106,7 +103,7 @@ func (m *MpvPlayer) Start(ctx context.Context) error {
 	m.cmd = exec.CommandContext(context.Background(), mpvBin,
 		"--no-video",
 		"--idle=yes", // stay alive with no track loaded
-		"--input-ipc-server="+mpvSocketPath,
+		"--input-ipc-server="+mpvIPCAddr,
 		"--ytdl=yes",     // pass YouTube/SoundCloud URLs to yt-dlp
 		"--really-quiet", // suppress mpv's own terminal output
 	)
@@ -116,32 +113,36 @@ func (m *MpvPlayer) Start(ctx context.Context) error {
 		return fmt.Errorf("starting mpv: %w", err)
 	}
 
-	// mpv binds the socket slightly after launch — poll until it appears.
-	// 5 seconds is generous; it usually appears in < 200ms.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(mpvSocketPath); err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if _, err := os.Stat(mpvSocketPath); err != nil {
-		m.cmd.Process.Kill() //nolint
-		m.cmd = nil
-		return fmt.Errorf("mpv IPC socket never appeared at %s", mpvSocketPath)
-	}
-
-	conn, err := net.Dial("unix", mpvSocketPath)
+	// mpv opens its IPC server slightly after launch — retry until it accepts.
+	conn, err := connectWithRetry(5 * time.Second)
 	if err != nil {
 		m.cmd.Process.Kill() //nolint
+		m.cmd.Wait()         //nolint
 		m.cmd = nil
-		return fmt.Errorf("connecting to mpv socket: %w", err)
+		return fmt.Errorf("could not connect to mpv IPC at %s: %w", mpvIPCAddr, err)
 	}
 	m.conn = conn
 
 	go m.readLoop()
 
 	return nil
+}
+
+// connectWithRetry dials mpv's IPC endpoint every 50ms until it succeeds or
+// the timeout passes. Dialing (rather than stat-ing a file) works for both
+// Unix sockets and Windows named pipes, which aren't files.
+func connectWithRetry(timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := dialIPC()
+		if err == nil {
+			return conn, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // readLoop continuously reads newline-delimited JSON from the mpv socket
@@ -172,14 +173,12 @@ func (m *MpvPlayer) readLoop() {
 			continue
 		}
 
-		// RequestID == 0 → this is an event. Re-unmarshal to get event fields.
 		var ev rawEvent
 		if err := json.Unmarshal(line, &ev); err != nil || ev.Event == "" {
 			continue
 		}
 
-		// We only forward events the app cares about. Adding more here later
-		// (e.g. "pause", "unpause", "metadata-update") is straightforward.
+		// Only forward the events the app handles.
 		switch ev.Event {
 		case "end-file", "start-file":
 			// Non-blocking send: if the channel is somehow full (shouldn't happen
@@ -231,8 +230,6 @@ func (m *MpvPlayer) send(args ...any) (response, error) {
 	}
 }
 
-// ── Player interface ───────────────────────────────────────────────────────
-
 func (m *MpvPlayer) Play(_ context.Context, item queue.Item) error {
 	// "replace" = stop current track and immediately start this one.
 	_, err := m.send("loadfile", item.URI, "replace")
@@ -272,28 +269,33 @@ func (m *MpvPlayer) Position(_ context.Context) (float64, bool, error) {
 	return pos, ok, nil
 }
 
+func (m *MpvPlayer) Duration(_ context.Context) (float64, error) {
+	r, err := m.send("get_property", "duration")
+	if err != nil {
+		// Idle, or the file/stream hasn't been probed yet (yt-dlp still
+		// resolving). Not an error for the caller — just unknown.
+		return 0, nil
+	}
+	dur, ok := r.Data.(float64)
+	if !ok {
+		return 0, nil // null → unknown
+	}
+	return dur, nil
+}
+
 func (m *MpvPlayer) Stop(_ context.Context) error {
 	_, err := m.send("stop")
 	return err
 }
 
 // findMpv tries exec.LookPath first, then falls back to common install
-// locations that package managers drop mpv into outside the standard PATH.
+// locations outside the standard PATH.
 func findMpv() (string, error) {
-	if p, err := exec.LookPath("mpv"); err == nil {
+	if p, err := exec.LookPath(mpvBinName); err == nil {
 		return p, nil
 	}
-	candidates := []string{
-		"/usr/bin/mpv",
-		"/usr/local/bin/mpv",
-		"/opt/homebrew/bin/mpv", // Apple Silicon brew
-		"/usr/local/Cellar/mpv", // Intel brew (version-suffixed, skip)
-		"/snap/bin/mpv",
-		"/nix/var/nix/profiles/default/bin/mpv",
-		os.Getenv("HOME") + "/.nix-profile/bin/mpv",
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
+	for _, p := range mpvCandidates() {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			return p, nil
 		}
 	}
@@ -313,5 +315,5 @@ func (m *MpvPlayer) Shutdown() {
 		m.cmd.Wait()         //nolint
 		m.cmd = nil
 	}
-	os.Remove(mpvSocketPath)
+	cleanupIPC()
 }

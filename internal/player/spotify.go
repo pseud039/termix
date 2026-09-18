@@ -13,8 +13,7 @@ import (
 // SpotifyPlayer never touches audio directly. spotifyd owns the entire
 // decode/output path as a Spotify Connect device; SpotifyPlayer's only
 // job is to tell Spotify's servers what that device should do, via the
-// Web API's /me/player/* endpoints. This mirrors how spotify-tui and
-// spotifyd itself expect to be controlled — no D-Bus/MPRIS involved.
+// Web API's /me/player/* endpoints.
 type SpotifyPlayer struct {
 	client    *zspotify.Client
 	deviceID  zspotify.ID
@@ -69,8 +68,6 @@ func (s *SpotifyPlayer) opts() *zspotify.PlayOptions {
 	return &zspotify.PlayOptions{DeviceID: &s.deviceID}
 }
 
-// ── Player interface ───────────────────────────────────────────────────────
-
 func (s *SpotifyPlayer) Play(ctx context.Context, item queue.Item) error {
 	if err := s.ensureDevice(ctx); err != nil {
 		return err
@@ -119,6 +116,18 @@ func (s *SpotifyPlayer) Position(ctx context.Context) (float64, bool, error) {
 		return 0, false, nil
 	}
 	return float64(state.Progress) / 1000.0, state.Playing, nil
+}
+
+func (s *SpotifyPlayer) Duration(ctx context.Context) (float64, error) {
+	state, err := s.client.PlayerState(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if state == nil || state.Item == nil {
+		return 0, nil
+	}
+	// FullTrack.Duration is in milliseconds.
+	return float64(state.Item.Duration) / 1000.0, nil
 }
 
 func (s *SpotifyPlayer) Stop(ctx context.Context) error {

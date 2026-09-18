@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -20,8 +21,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "warning: could not load .env: %v\n", err)
 	}
 
-	// `termix auth` runs the one-time browser OAuth flow and exits —
-	// it does not launch the TUI. Run this once before anything else.
+	// `termix auth` runs the one-time browser OAuth flow and exits without
+	// launching the TUI.
 	if len(os.Args) > 1 && os.Args[1] == "auth" {
 		if err := spotifyclient.Login(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "termix auth: %v\n", err)
@@ -34,10 +35,8 @@ func main() {
 	mpv := player.NewMpvPlayer()
 	router := player.NewRouter(mpv)
 
-	// ── Spotify (M3) ──────────────────────────────────────────────────────────
-	// If a cached login exists (from `termix auth`), wire up the Spotify
-	// backend. If not, Spotify items just show router's "run `termix auth`
-	// first" error when played — everything else still works.
+	// Spotify is optional: without a saved login, Spotify items fail with a
+	// "run `termix auth` first" error and everything else still works.
 	var spotifySearch *spotifyclient.SearchProvider
 	if spClient, err := spotifyclient.NewClient(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "note: Spotify not connected (%v)\n", err)
@@ -47,51 +46,18 @@ func main() {
 	}
 	_ = spotifySearch // wired into the Search pane once that lands
 
-	// ── Load the queue ────────────────────────────────────────────────────────
-	// Replace these items with your own local files for M2 testing.
-	// The URI for a local file is just the absolute path to the file.
-	// mpv plays MP3, FLAC, OGG, WAV, AAC — anything ffmpeg handles.
-	//
-	// To test auto-advance: add two short files and let the first one finish.
-	// The "end-file" event will fire → QueueAdvanceMsg → second track starts.
-	//
-	// Example real entries (uncomment and set your own paths):
-	//
-	//   q.Add(queue.Item{
-	//       ID:     "local-1",
-	//       Title:  "Track One",
-	//       Artist: "Artist",
-	//       Source: queue.SourceLocal,
-	//       URI:    "/home/you/music/track1.mp3",
-	//   })
-	//   q.Add(queue.Item{
-	//       ID:     "yt-1",
-	//       Title:  "Never Gonna Give You Up",
-	//       Artist: "Rick Astley",
-	//       Source: queue.SourceYouTube,
-	//       URI:    "ytdl://dQw4w9WgXcQ",  // needs yt-dlp installed
-	//   })
-	//
-	// For now, the demo items below are display-only placeholders.
-	// Swap the URIs for real paths and they'll play immediately.
 	loadDemoQueue(q)
 	q.JumpTo(0)
 
-	// ── Start mpv ─────────────────────────────────────────────────────────────
-	// mpv.Start() checks PATH for the mpv binary and connects to its IPC socket.
-	// If it fails we still launch the TUI — you can browse the queue, but
-	// playback controls will return errors until mpv is available.
-	mpvReady := true
-	if err := mpv.Start(ctx); err != nil {
-		// Print the error above the TUI so the user knows what happened.
-		// We don't exit — the rest of the UI still works.
-		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-		mpvReady = false
+	// A failed mpv start is not fatal: the TUI still runs and shows the error
+	// in the status line; only local/YouTube playback is unavailable.
+	mpvErr := mpv.Start(ctx)
+	mpvReady := mpvErr == nil
+	if mpvErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", mpvErr)
 	}
 
-	// ── If mpv is ready and queue has a local/YouTube item, start playing ─────
-	// This gives you immediate audio feedback when you run the binary.
-	// For Spotify items, playback requires auth (M3) so we skip those here.
+	// Auto-play only mpv-backed items; Spotify needs a device and a login.
 	if mpvReady {
 		if item, ok := q.Current(); ok {
 			if item.Source == queue.SourceLocal || item.Source == queue.SourceYouTube {
@@ -102,9 +68,7 @@ func main() {
 		}
 	}
 
-	// ── Build and run the Bubbletea program ───────────────────────────────────
-
-	model := app.New(ctx, q, router, mpv, mpvReady)
+	model := app.New(ctx, q, router, mpv, mpvErr)
 
 	p := tea.NewProgram(
 		model,
@@ -117,9 +81,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── Cleanup ───────────────────────────────────────────────────────────────
-	// Kill the mpv subprocess and remove the IPC socket file.
-	// This runs after the TUI exits — terminal is already restored by WithAltScreen.
 	mpv.Shutdown()
 }
 
@@ -162,25 +123,24 @@ func loadDotEnv(path string) error {
 	return nil
 }
 
-// loadDemoQueue populates the queue with placeholder tracks for display testing.
-// Every item here has a fake URI — they won't play until you replace them.
-// Keep SourceLocal and SourceYouTube first so mpvReady auto-play can fire.
 func loadDemoQueue(q *queue.Queue) {
 	q.Add(queue.Item{
-		ID:     "local-1",
-		Title:  "Replace me with a real path",
-		Artist: "Local File",
-		Album:  "Your Music",
-		Source: queue.SourceLocal,
-		URI:    "/tmp/replace-me.mp3", // ← put an actual file path here
+		ID:       "local-1",
+		Title:    "Replace me with a real path",
+		Artist:   "Local File",
+		Album:    "Your Music",
+		Source:   queue.SourceLocal,
+		URI:      "C:\\Users\\gunsh\\Music\\aae_ganpat_bjana.mp3",
+		Duration: 121 * time.Second,
 	})
 	q.Add(queue.Item{
-		ID:     "yt-1",
-		Title:  "Never Gonna Give You Up",
-		Artist: "Rick Astley",
-		Album:  "Whenever You Need Somebody",
-		Source: queue.SourceYouTube,
-		URI:    "ytdl://dQw4w9WgXcQ", // needs yt-dlp in PATH
+		ID:       "yt-1",
+		Title:    "Never Gonna Give You Up",
+		Artist:   "Rick Astley",
+		Album:    "Whenever You Need Somebody",
+		Source:   queue.SourceYouTube,
+		URI:      "ytdl://dQw4w9WgXcQ",
+		Duration: 0, // unknown until mpv probes the file
 	})
 	q.Add(queue.Item{
 		ID:     "spotify-1",
@@ -188,6 +148,6 @@ func loadDemoQueue(q *queue.Queue) {
 		Artist: "The Weeknd",
 		Album:  "After Hours",
 		Source: queue.SourceSpotify,
-		URI:    "spotify:track:0VjIjW4GlUZAMYd2vXMi3b", // needs auth (M3)
+		URI:    "spotify:track:0VjIjW4GlUZAMYd2vXMi3b",
 	})
 }

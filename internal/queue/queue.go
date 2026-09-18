@@ -74,7 +74,6 @@ func (q *Queue) AddNext(item Item) {
 		q.items = append(q.items, item)
 		return
 	}
-	// Insert right after current.
 	insertAt := q.current + 1
 	q.items = append(q.items[:insertAt], append([]Item{item}, q.items[insertAt:]...)...)
 }

@@ -12,29 +12,24 @@ import (
 	"github.com/pseud039/termix/internal/queue"
 )
 
-// ── Messages ──────────────────────────────────────────────────────────────────
-
 // TickMsg fires every second from the tea.Tick loop.
 type TickMsg time.Time
 
 // PlaybackStateMsg carries a fresh position snapshot polled from the player.
 type PlaybackStateMsg player.State
 
-// ErrorMsg shows in the status bar for one cycle.
+// ErrorMsg shows an error in the status bar.
 type ErrorMsg struct{ Err error }
 
 // TrackStartMsg is dispatched whenever a new track begins (play cmd or auto-advance).
 type TrackStartMsg struct{ Item queue.Item }
 
-// QueueAdvanceMsg is dispatched by waitForMpvEventCmd when mpv fires "end-file"
-// with reason "eof" — meaning the track finished naturally (not skipped/stopped).
+// QueueAdvanceMsg moves to the next queue item after mpv reports that the
+// current track ended ("eof") or failed ("error").
 type QueueAdvanceMsg struct{}
 
-// mpvEventMsg is an internal message carrying the raw MpvEvent from the channel.
-// It is handled in Update and never leaks outside this file.
+// mpvEventMsg wraps an event read from the mpv events channel.
 type mpvEventMsg struct{ ev player.MpvEvent }
-
-// ── Tabs ──────────────────────────────────────────────────────────────────────
 
 type tab int
 
@@ -46,11 +41,7 @@ const (
 
 var tabNames = []string{"Queue", "Search", "Lyrics"}
 
-// ── Model ─────────────────────────────────────────────────────────────────────
-
-// Model is the single source of truth for the entire application.
-// Bubbletea calls Init → Update → View in a tight loop on the main goroutine.
-// Everything that touches shared state must go through this model.
+// Model holds all application state.
 type Model struct {
 	// Injected subsystems
 	queue  *queue.Queue
@@ -68,6 +59,7 @@ type Model struct {
 	// Playback state — updated every second by pollPlaybackCmd
 	playing      bool
 	position     time.Duration
+	duration     time.Duration // total length of current track; 0 = unknown
 	volume       int
 	currentTrack queue.Item
 	hasTrack     bool
@@ -80,25 +72,29 @@ type Model struct {
 	searchMode  bool
 }
 
-func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvReady bool) Model {
-	return Model{
+// New builds the Model. mpvErr is the result of mpv.Start; when non-nil it is
+// shown in the status line so the user sees why local/YouTube playback is off.
+func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error) Model {
+	m := Model{
 		queue:    q,
 		router:   r,
 		mpv:      mpv,
 		ctx:      ctx,
 		volume:   80,
-		mpvReady: mpvReady,
+		mpvReady: mpvErr == nil,
 	}
+	if mpvErr != nil {
+		m.statusMsg = mpvErr.Error()
+		m.statusIsErr = true
+	}
+	return m
 }
-
-// ── Init ──────────────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tickCmd()}
 
-	// Only start listening for mpv events if mpv actually started.
-	// If mpv isn't running, waitForMpvEventCmd would block forever on a
-	// channel that never receives — so we gate it here.
+	// Without a running mpv the events channel never receives, so listening
+	// would just block forever.
 	if m.mpvReady {
 		cmds = append(cmds, m.waitForMpvEventCmd())
 	}
@@ -106,30 +102,22 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// tickCmd returns a Cmd that fires TickMsg after one second.
-// We re-issue it on every TickMsg to keep the loop running.
+// tickCmd fires TickMsg after one second; Update re-issues it on every tick.
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return TickMsg(t)
 	})
 }
 
-// waitForMpvEventCmd returns a Cmd that blocks on the mpv events channel.
-// When an event arrives it wraps it in mpvEventMsg and returns it to Update.
-//
-// Critical design point: tea.Cmd is one-shot. After it fires once, it's done.
-// So every time we handle an mpvEventMsg in Update we MUST re-issue this cmd
-// — otherwise we stop listening and future end-file events are silently lost.
+// waitForMpvEventCmd blocks on the mpv events channel and returns the next
+// event as an mpvEventMsg. A tea.Cmd fires only once, so Update must re-issue
+// this after every mpvEventMsg or later end-file events are lost.
 func (m Model) waitForMpvEventCmd() tea.Cmd {
 	return func() tea.Msg {
-		// This blocks until mpv sends an event (end-file, start-file, etc.).
-		// Bubbletea runs this in a goroutine so it doesn't freeze the UI.
 		ev := <-m.mpv.Events()
 		return mpvEventMsg{ev: ev}
 	}
 }
-
-// ── Update ────────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -139,37 +127,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case TickMsg:
-		// Every second: reschedule the tick AND poll mpv for current position.
 		return m, tea.Batch(tickCmd(), m.pollPlaybackCmd())
 
 	case PlaybackStateMsg:
 		m.playing = msg.Playing
 		m.position = msg.Position
+		// Only accept a known duration — mpv reports null for a moment when
+		// a track is loading, and volumeCmd sends a state with no duration.
+		// Neither should blank a length we already have.
+		if msg.Duration > 0 {
+			m.duration = msg.Duration
+		}
 		// Don't overwrite volume here — we manage it locally to avoid
 		// the value jumping around during the poll round-trip.
 
 	case TrackStartMsg:
 		m.hasTrack = true
 		m.currentTrack = msg.Item
+		// Start from whatever the item knows; the next poll fills in the
+		// real length from the backend.
+		m.duration = msg.Item.Duration
 		m.statusIsErr = false
 		m.statusMsg = fmt.Sprintf("playing: %s — %s [%s]",
 			msg.Item.Artist, msg.Item.Title, msg.Item.Source)
 
 	case QueueAdvanceMsg:
-		// A track ended naturally — advance the queue and play the next item.
 		return m, m.advanceQueueCmd()
 
 	case mpvEventMsg:
-		// We received an event from mpv. Re-issue waitForMpvEventCmd immediately
-		// so we keep listening — if we forget this, future events are lost.
+		// Keep listening; see waitForMpvEventCmd.
 		var cmds []tea.Cmd
 		cmds = append(cmds, m.waitForMpvEventCmd())
 
 		switch msg.ev.Type {
 		case "end-file":
-			// reason "eof"  → track played to completion → advance queue
-			// reason "stop" → we called stop() ourselves → don't advance
-			// reason "error"→ mpv couldn't play the file → show error, advance
 			switch msg.ev.Reason {
 			case "eof":
 				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{} })
@@ -178,10 +169,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsErr = true
 				cmds = append(cmds, func() tea.Msg { return QueueAdvanceMsg{} })
 			}
-			// "stop" and "quit" → do nothing, user triggered it
+			// "stop" and "quit" come from skipping or shutting down, not a
+			// track finishing, so they must not advance the queue.
 
 		case "start-file":
-			// mpv started loading a new file — clear any stale error.
 			m.statusIsErr = false
 		}
 
@@ -197,8 +188,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	return m, nil
 }
-
-// ── Key handling ──────────────────────────────────────────────────────────────
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searchMode {
@@ -265,19 +254,24 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
-
-// pollPlaybackCmd asks the active player for its current position.
-// Runs every second via TickMsg. Returns nil (no-op) when nothing is playing.
+// pollPlaybackCmd asks the active player for its position and duration.
+// It runs on every TickMsg.
 func (m Model) pollPlaybackCmd() tea.Cmd {
 	return func() tea.Msg {
 		pos, playing, err := m.router.Position(m.ctx)
 		if err != nil {
 			return nil // transient poll errors are expected; don't spam the status bar
 		}
+		// Duration is polled separately so a failure here doesn't drop the
+		// position update — we just report "unknown" (0) for this tick.
+		dur, err := m.router.Duration(m.ctx)
+		if err != nil {
+			dur = 0
+		}
 		return PlaybackStateMsg{
 			Playing:  playing,
 			Position: time.Duration(pos * float64(time.Second)),
+			Duration: time.Duration(dur * float64(time.Second)),
 			Volume:   m.volume,
 		}
 	}
@@ -384,8 +378,6 @@ func (m Model) advanceQueueCmd() tea.Cmd {
 		return TrackStartMsg{Item: item}
 	}
 }
-
-// ── View ──────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
 	if m.width == 0 {
