@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/pseud039/termix/internal/lyrics"
 	"github.com/pseud039/termix/internal/queue"
 )
 
@@ -456,17 +458,154 @@ func (m Model) renderSearchResults(height int) string {
 }
 
 func (m Model) renderLyrics(height int) string {
-	body := lipgloss.NewStyle().
-		Foreground(colMuted).
-		Width(m.width).
-		Align(lipgloss.Center).
-		PaddingTop(height / 3).
-		Render("Lyrics sync coming in M5\n\nPowered by lrclib.net")
+	frame := lipgloss.NewStyle().Width(m.width).Height(height)
 
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Height(height).
-		Render(body)
+	// centered draws a short message in the middle of the pane, the way
+	// the empty queue does.
+	centered := func(msg string, color lipgloss.Color) string {
+		return frame.Render(lipgloss.NewStyle().
+			Foreground(color).
+			Width(m.width).
+			Align(lipgloss.Center).
+			PaddingTop(height / 3).
+			Render(msg))
+	}
+
+	if !m.hasTrack {
+		return centered("Nothing playing\n\nPress [2] to search and add tracks", colMuted)
+	}
+
+	var tag string
+	switch {
+	case m.lyricsLoading:
+		tag = "fetching…"
+	case m.lyrics.IsSynced():
+		tag = "synced"
+	case m.lyrics != nil && m.lyrics.Instrumental && m.lyrics.Plain == "":
+		tag = "instrumental"
+	case m.lyrics != nil:
+		tag = "plain"
+	}
+	title := lipgloss.NewStyle().Foreground(colText).Bold(true).
+		Render(truncate(m.currentTrack.Artist+" — "+m.currentTrack.Title, m.width-24))
+	if tag != "" {
+		title += styleMuted.Render("  [" + tag + "]")
+	}
+	if m.lyricsOffset != 0 {
+		title += lipgloss.NewStyle().Foreground(colWarning).Render("  offset " + formatOffset(m.lyricsOffset))
+	}
+	hint := styleMuted.Render("[j/k] move  [enter] seek to line  [esc] follow  [ [ ] ] offset ±0.5s")
+
+	head := "\n  " + title + "\n  " + hint + "\n\n"
+	bodyHeight := height - lipgloss.Height(head)
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	var body string
+	switch {
+	case m.lyricsLoading:
+		body = styleMuted.Render("  Fetching lyrics…")
+	case errors.Is(m.lyricsErr, lyrics.ErrNotFound):
+		body = styleMuted.Render(fmt.Sprintf("  No lyrics on lrclib.net for %s — %s", m.currentTrack.Artist, m.currentTrack.Title))
+	case m.lyricsErr != nil:
+		body = lipgloss.NewStyle().Foreground(colDanger).Render("  Lyrics failed: " + m.lyricsErr.Error())
+	case m.lyrics == nil:
+		body = "" // a track just started and no fetch was issued
+	case m.lyrics.IsSynced():
+		body = m.renderSyncedLyrics(bodyHeight)
+	case m.lyrics.Plain != "":
+		body = m.renderPlainLyrics(bodyHeight)
+	default:
+		body = lipgloss.NewStyle().Foreground(colMuted).Width(m.width).Align(lipgloss.Center).
+			PaddingTop(bodyHeight / 3).Render("♪ instrumental")
+	}
+
+	return frame.Render(head + body)
+}
+
+// lyricsWindow returns the [start, end) range of n lines that keeps center
+// in the middle of a view height rows tall, clamped to the ends.
+func lyricsWindow(n, height, center int) (int, int) {
+	if n <= height {
+		return 0, n
+	}
+	start := center - height/2
+	if start < 0 {
+		start = 0
+	}
+	if start > n-height {
+		start = n - height
+	}
+	return start, start + height
+}
+
+// renderSyncedLyrics shows the lines around the one being sung: past
+// lines dimmed, the active one bold in the accent colour, upcoming lines
+// in the normal text colour. A manual cursor (j/k) takes over centering
+// and gets the same highlight the search results use.
+func (m Model) renderSyncedLyrics(height int) string {
+	lines := m.lyrics.Synced
+	active := m.lyrics.ActiveLine(m.playbackPos() - m.lyricsOffset)
+	center := active
+	if m.lyricsCursor >= 0 {
+		center = m.lyricsCursor
+	}
+	if center < 0 {
+		center = 0
+	}
+	start, end := lyricsWindow(len(lines), height, center)
+
+	past := styleMuted
+	current := lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	upcoming := styleText
+	cursor := lipgloss.NewStyle().Background(colSurface).Width(m.width - 2)
+
+	var rows []string
+	for i := start; i < end; i++ {
+		text := lines[i].Text
+		style := upcoming
+		switch {
+		case i == active:
+			style = current
+		case i < active:
+			style = past
+		}
+		if text == "" {
+			text = "♪"
+			if i != active {
+				style = past
+			}
+		}
+		row := "  " + style.Render(truncate(text, m.width-4))
+		if i == m.lyricsCursor {
+			row = cursor.Render(row)
+		}
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// renderPlainLyrics scrolls untimed lyrics with the cursor as the
+// position; nothing is highlighted since there is no timing to follow.
+func (m Model) renderPlainLyrics(height int) string {
+	lines := strings.Split(m.lyrics.Plain, "\n")
+	center := m.lyricsCursor
+	if center < 0 {
+		center = 0
+	}
+	start, end := lyricsWindow(len(lines), height, center)
+
+	cursor := lipgloss.NewStyle().Background(colSurface).Width(m.width - 2)
+	var rows []string
+	for i := start; i < end; i++ {
+		row := "  " + styleText.Render(truncate(strings.TrimRight(lines[i], "\r"), m.width-4))
+		if i == m.lyricsCursor {
+			row = cursor.Render(row)
+		}
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
 }
 
 func renderProgressBar(width int, pct float64) string {

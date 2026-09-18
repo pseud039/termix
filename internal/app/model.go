@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/pseud039/termix/internal/lyrics"
 	"github.com/pseud039/termix/internal/player"
 	"github.com/pseud039/termix/internal/queue"
 	"github.com/pseud039/termix/internal/recommend"
@@ -64,6 +65,24 @@ type recommendationsMsg struct {
 // recommendationTimeout bounds one smart-shuffle fetch: a Last.fm call
 // plus a search per pick, and yt-dlp searches take several seconds each.
 const recommendationTimeout = 90 * time.Second
+
+// lyricsMsg carries the outcome of a lyrics fetch for the track that
+// started at seq; results for an older track are ignored.
+type lyricsMsg struct {
+	seq    int
+	lyrics *lyrics.Lyrics
+	err    error
+}
+
+// lyricsTickMsg redraws the Lyrics tab between the one-second playback
+// polls so the highlighted line keeps up with the audio.
+type lyricsTickMsg time.Time
+
+// lyricsRefresh is how often the Lyrics tab redraws while it is open.
+const lyricsRefresh = 250 * time.Millisecond
+
+// lyricsOffsetStep is how far [ and ] nudge the lyric timing.
+const lyricsOffsetStep = 500 * time.Millisecond
 
 type tab int
 
@@ -121,14 +140,26 @@ type Model struct {
 	searchResults []queue.Item
 	searchCursor  int
 	searchErr     error
+
+	// Lyrics pane
+	lyricsClient  *lyrics.Client // nil = lyrics off (tests)
+	lyricsSeq     int
+	lyricsLoading bool
+	lyrics        *lyrics.Lyrics // nil when the current track has none
+	lyricsErr     error
+	lyricsCursor  int           // -1 = follow playback; else the line the user moved to
+	lyricsOffset  time.Duration // user nudge; positive shows lyrics later
+	lastPollAt    time.Time     // when position was last read, for interpolation
+	lyricsTicking bool          // a lyricsTickMsg chain is running
 }
 
 // New builds the Model. mpvErr is the result of mpv.Start; when non-nil it is
 // shown in the status line so the user sees why local/YouTube playback is off.
 // searchers holds one Searcher per available source; the Search tab explains
 // how to enable any that are missing. recommender may be nil, in which case
-// smart shuffle is unavailable and z only toggles plain shuffle.
-func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher, recommender *recommend.Recommender) Model {
+// smart shuffle is unavailable and z only toggles plain shuffle. lyr fetches
+// lyrics for each track that starts; nil turns the Lyrics tab off.
+func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher, recommender *recommend.Recommender, lyr *lyrics.Client) Model {
 	m := Model{
 		queue:        q,
 		router:       r,
@@ -139,6 +170,8 @@ func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvP
 		ctx:          ctx,
 		volume:       -1,
 		mpvReady:     mpvErr == nil,
+		lyricsClient: lyr,
+		lyricsCursor: -1,
 	}
 	if mpvErr != nil {
 		m.statusMsg = mpvErr.Error()
@@ -189,6 +222,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PlaybackStateMsg:
 		m.playing = msg.Playing
 		m.position = msg.Position
+		m.lastPollAt = time.Now()
 		// Only accept a known duration — mpv reports null for a moment when
 		// a track is loading, and volumeCmd sends a state with no duration.
 		// Neither should blank a length we already have.
@@ -218,9 +252,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusIsErr = false
 		m.statusMsg = fmt.Sprintf("playing: %s — %s [%s]",
 			msg.Item.Artist, msg.Item.Title, msg.Item.Source)
+		// Fetch this track's lyrics; the seq bump in resetLyrics makes any
+		// answer still coming for the previous track land unused.
+		var cmds []tea.Cmd
+		m.resetLyrics()
+		if m.lyricsClient != nil {
+			m.lyricsLoading = true
+			cmds = append(cmds, m.fetchLyricsCmd(m.lyricsSeq, msg.Item))
+		}
 		// With smart shuffle on, keep the upcoming list topped up with
 		// similar tracks, seeded on whatever just started.
-		return m.topUpRecommendations(msg.Item)
+		next, cmd := m.topUpRecommendations(msg.Item)
+		cmds = append(cmds, cmd)
+		return next, tea.Batch(cmds...)
+
+	case lyricsMsg:
+		if msg.seq != m.lyricsSeq {
+			return m, nil
+		}
+		m.lyricsLoading = false
+		m.lyrics = msg.lyrics
+		m.lyricsErr = msg.err
+
+	case lyricsTickMsg:
+		// Only redraw; the view reads an interpolated position. The chain
+		// stops once the tab is left and restarts on return (key 3).
+		if m.activeTab != tabLyrics {
+			m.lyricsTicking = false
+			return m, nil
+		}
+		return m, lyricsTickCmd()
 
 	case QueueAdvanceMsg:
 		return m, m.advanceQueueCmd(msg.Failed)
@@ -230,6 +291,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentTrack = queue.Item{}
 		m.duration = 0
 		m.position = 0
+		m.resetLyrics()
 		m.statusIsErr = msg.Reason != ""
 		m.statusMsg = msg.Reason
 		if m.statusMsg == "" {
@@ -351,6 +413,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activeTab = tabSearch
 	case "3":
 		m.activeTab = tabLyrics
+		if !m.lyricsTicking {
+			m.lyricsTicking = true
+			return m, lyricsTickCmd()
+		}
 
 	case " ":
 		return m, m.togglePauseCmd()
@@ -375,19 +441,41 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusIsErr = false
 		m.statusMsg = "repeat: " + m.queue.CycleRepeat().String()
 
+	// Lyric timing nudges are global so you can fix a drifting track
+	// from any tab.
+	case "[":
+		return m.nudgeLyrics(-lyricsOffsetStep)
+	case "]":
+		return m.nudgeLyrics(+lyricsOffsetStep)
+
 	case "/":
 		if m.activeTab == tabSearch {
 			m.searchMode = true
 			m.searchQuery = ""
 		}
 
+	case "esc":
+		if m.activeTab == tabLyrics {
+			m.lyricsCursor = -1
+		}
+
 	case "up", "k":
-		if m.activeTab == tabSearch && m.searchCursor > 0 {
-			m.searchCursor--
+		switch m.activeTab {
+		case tabSearch:
+			if m.searchCursor > 0 {
+				m.searchCursor--
+			}
+		case tabLyrics:
+			m.moveLyricsCursor(-1)
 		}
 	case "down", "j":
-		if m.activeTab == tabSearch && m.searchCursor < len(m.searchResults)-1 {
-			m.searchCursor++
+		switch m.activeTab {
+		case tabSearch:
+			if m.searchCursor < len(m.searchResults)-1 {
+				m.searchCursor++
+			}
+		case tabLyrics:
+			m.moveLyricsCursor(+1)
 		}
 
 	case "enter":
@@ -395,6 +483,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tabQueue:
 			m.failStreak = 0
 			return m, m.playCurrentQueueItemCmd()
+		case tabLyrics:
+			// Jump to the selected line, then follow playback again.
+			if m.lyrics.IsSynced() && m.lyricsCursor >= 0 && m.lyricsCursor < len(m.lyrics.Synced) {
+				at := m.lyrics.Synced[m.lyricsCursor].At + m.lyricsOffset
+				m.lyricsCursor = -1
+				return m, m.seekToCmd(at.Seconds())
+			}
 		case tabSearch:
 			if m.searchCursor < len(m.searchResults) {
 				item := m.searchResults[m.searchCursor]
@@ -676,15 +771,116 @@ func (m Model) prevTrackCmd() tea.Cmd {
 func (m Model) seekCmd(delta float64) tea.Cmd {
 	return func() tea.Msg {
 		pos, _, _ := m.router.Position(m.ctx)
-		newPos := pos + delta
-		if newPos < 0 {
-			newPos = 0
+		return m.seekToCmd(pos + delta)()
+	}
+}
+
+// seekToCmd jumps to an absolute position in seconds (clamped at 0).
+func (m Model) seekToCmd(seconds float64) tea.Cmd {
+	return func() tea.Msg {
+		if seconds < 0 {
+			seconds = 0
 		}
-		if err := m.router.Seek(m.ctx, newPos); err != nil {
+		if err := m.router.Seek(m.ctx, seconds); err != nil {
 			return ErrorMsg{err}
 		}
 		return nil
 	}
+}
+
+// resetLyrics forgets the previous track's lyrics and invalidates any
+// fetch still in flight for it.
+func (m *Model) resetLyrics() {
+	m.lyricsSeq++
+	m.lyricsLoading = false
+	m.lyrics = nil
+	m.lyricsErr = nil
+	m.lyricsCursor = -1
+	m.lyricsOffset = 0
+}
+
+func (m Model) fetchLyricsCmd(seq int, item queue.Item) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
+		defer cancel()
+		l, err := m.lyricsClient.Fetch(ctx, item)
+		return lyricsMsg{seq: seq, lyrics: l, err: err}
+	}
+}
+
+// lyricsTickCmd fires lyricsTickMsg after lyricsRefresh; Update re-issues
+// it while the Lyrics tab is open.
+func lyricsTickCmd() tea.Cmd {
+	return tea.Tick(lyricsRefresh, func(t time.Time) tea.Msg {
+		return lyricsTickMsg(t)
+	})
+}
+
+// playbackPos estimates the current position between polls: the last
+// polled position plus the time since, while playing.
+func (m Model) playbackPos() time.Duration {
+	pos := m.position
+	if m.playing && !m.lastPollAt.IsZero() {
+		pos += time.Since(m.lastPollAt)
+	}
+	if m.duration > 0 && pos > m.duration {
+		pos = m.duration
+	}
+	return pos
+}
+
+// lyricsLineCount is how many lines the Lyrics tab can move a cursor over.
+func (m Model) lyricsLineCount() int {
+	switch {
+	case m.lyrics.IsSynced():
+		return len(m.lyrics.Synced)
+	case m.lyrics != nil && m.lyrics.Plain != "":
+		return len(strings.Split(m.lyrics.Plain, "\n"))
+	}
+	return 0
+}
+
+// moveLyricsCursor steps the manual cursor. The first move starts from the
+// line being sung (synced) or the top (plain).
+func (m *Model) moveLyricsCursor(step int) {
+	n := m.lyricsLineCount()
+	if n == 0 {
+		return
+	}
+	cur := m.lyricsCursor
+	if cur < 0 {
+		cur = 0
+		if m.lyrics.IsSynced() {
+			cur = m.lyrics.ActiveLine(m.playbackPos() - m.lyricsOffset)
+			if cur < 0 {
+				cur = 0
+			}
+		}
+	}
+	cur += step
+	if cur < 0 {
+		cur = 0
+	}
+	if cur > n-1 {
+		cur = n - 1
+	}
+	m.lyricsCursor = cur
+}
+
+// nudgeLyrics shifts the lyric timing and reports the new offset.
+func (m Model) nudgeLyrics(delta time.Duration) (tea.Model, tea.Cmd) {
+	m.lyricsOffset += delta
+	m.statusIsErr = false
+	m.statusMsg = "lyrics offset: " + formatOffset(m.lyricsOffset)
+	return m, nil
+}
+
+// formatOffset renders a timing nudge as "+0.5s", "-1.0s" or "0".
+func formatOffset(d time.Duration) string {
+	if d == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%+.1fs", d.Seconds())
 }
 
 // changeVolume shows the new volume right away and sends it to the player.

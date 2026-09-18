@@ -12,6 +12,7 @@ import (
 	"github.com/pseud039/termix/internal/app"
 	"github.com/pseud039/termix/internal/lastfm"
 	"github.com/pseud039/termix/internal/local"
+	"github.com/pseud039/termix/internal/lyrics"
 	"github.com/pseud039/termix/internal/player"
 	"github.com/pseud039/termix/internal/queue"
 	"github.com/pseud039/termix/internal/recommend"
@@ -77,7 +78,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", mpvErr)
 	}
 
-	model := app.New(ctx, q, router, mpv, mpvErr, searchers, recommender)
+	// Lyrics come from lrclib.net (no key needed) and are cached on disk;
+	// without a cache dir they are simply refetched each time.
+	var lyricsCache *lyrics.DiskCache
+	if dir, err := os.UserCacheDir(); err == nil {
+		lyricsCache = lyrics.NewDiskCache(filepath.Join(dir, "termix", "lyrics"))
+	}
+	lyr := lyrics.NewClient(lyricsCache)
+
+	model := app.New(ctx, q, router, mpv, mpvErr, searchers, recommender, lyr)
 
 	p := tea.NewProgram(
 		model,

@@ -125,7 +125,12 @@ go run ./cmd
 | `Enter` | Play / Add |
 | `Shift+Enter` | Insert next |
 | `d` | Remove from queue |
+| `j` / `k` | Move through search results or lyric lines |
+| `Enter` (Lyrics tab) | Seek to the selected lyric line; `Esc` follows playback again |
+| `[` / `]` | Nudge lyric timing by 0.5s |
 | `q` | Quit |
+
+Lyrics come from [lrclib.net](https://lrclib.net) (no account needed) and are cached under your user cache directory (`termix/lyrics`).
 
 ---
 
@@ -152,7 +157,6 @@ termix/
 - YouTube search integration
 - Local library indexing
 - Federated search across all sources
-- Synced lyrics
 - Queue persistence
 - Album artwork (Kitty graphics protocol)
 
