@@ -33,3 +33,4 @@ config.toml
 termix
 CLAUDE.md
 .env
+dist/

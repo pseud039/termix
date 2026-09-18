@@ -14,11 +14,13 @@ Termix is a keyboard-first TUI music player built with Go and Bubble Tea. Instea
 - Unified queue across Spotify, YouTube, and local music
 - Spotify playback via **spotifyd** + Web API
 - YouTube playback through **mpv** + **yt-dlp**
-- Local library indexing and search
-- Persistent terminal UI built with Bubble Tea
-- Keyboard-driven workflow
+- Search across Spotify, YouTube and your local music folder
+- Shuffle, repeat, and smart shuffle that pulls similar tracks from Last.fm
+- Synced lyrics from lrclib.net
+- Terminal UI built with Bubble Tea, fully keyboard-driven
 - OAuth authentication with automatic token refresh
 - Automatic backend switching between music sources
+- Single `config.toml` for credentials and settings
 
 ---
 
@@ -52,22 +54,43 @@ Termix is a keyboard-first TUI music player built with Go and Bubble Tea. Instea
 
 ## Requirements
 
-- Go 1.22+
-- mpv
-- yt-dlp
-- spotifyd
-- Spotify Premium (required for Spotify playback)
+Termix itself is a single Go binary. Playback is done by external programs, so which ones you need depends on which sources you want:
+
+| Dependency | Needed for | Required? |
+|------------|-----------|-----------|
+| [mpv](https://mpv.io) | Local files and YouTube playback | Yes, unless you only use Spotify |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | YouTube search and playback (mpv calls it) | For YouTube |
+| [spotifyd](https://github.com/Spotifyd/spotifyd) | Spotify playback (runs as a Spotify Connect device) | For Spotify |
+| Spotify Premium account | Spotify playback and search | For Spotify |
+| Spotify developer app | Client ID and secret for the Web API | For Spotify |
+| [Last.fm API key](https://www.last.fm/api/account/create) | Smart shuffle (similar-track picks) | Optional |
+| Go 1.22+ | Only to build from source | Build only |
+
+Termix runs on Linux, WSL2, macOS and native Windows.
 
 ---
 
 ## Installation
 
+### 1. Get Termix
+
+With Go installed:
+
+```bash
+go install github.com/pseud039/termix/cmd@latest
+```
+
+That puts a binary called `cmd` in `$GOPATH/bin`. Rename it, or build from source with a proper name:
+
 ```bash
 git clone https://github.com/pseud039/termix.git
 cd termix
-
-go mod download
+go build -o termix ./cmd        # termix.exe on Windows
 ```
+
+Put the binary somewhere on your `PATH`, or run it from where it is.
+
+### 2. Install mpv and yt-dlp
 
 Ubuntu / Debian:
 
@@ -75,9 +98,19 @@ Ubuntu / Debian:
 sudo apt install mpv yt-dlp
 ```
 
-Arch: `sudo pacman -S mpv yt-dlp` · macOS: `brew install mpv yt-dlp`
+Arch:
 
-Windows (native) — with [Scoop](https://scoop.sh) or [Chocolatey](https://chocolatey.org):
+```bash
+sudo pacman -S mpv yt-dlp
+```
+
+macOS ([Homebrew](https://brew.sh)):
+
+```bash
+brew install mpv yt-dlp
+```
+
+Windows ([Scoop](https://scoop.sh) or [Chocolatey](https://chocolatey.org)):
 
 ```powershell
 scoop install mpv yt-dlp
@@ -85,11 +118,34 @@ scoop install mpv yt-dlp
 choco install mpvio yt-dlp
 ```
 
-Termix looks for `mpv.exe` on your `PATH`, then next to `termix.exe`, then in the default Scoop and Chocolatey folders. YouTube playback also needs `yt-dlp` on your `PATH` (or next to `mpv.exe`). If mpv can't be found, Termix still starts and shows an install hint in the status line.
+Termix looks for `mpv` on your `PATH`, then next to its own binary, then in the default Scoop and Chocolatey folders (Windows) or `~/.nix-profile/bin` (Linux). `yt-dlp` must be on `PATH` or next to `mpv`; if it lives somewhere else, set `youtube.ytdlp` in `config.toml`. If mpv can't be found, Termix still starts and shows an install hint in the status line.
 
-Install `spotifyd` separately. Termix picks the spotifyd Spotify Connect device automatically (by its `spotifyd@...` name, or failing that by its "Speaker" type), so your phone or desktop app being online doesn't matter. If it still can't tell, set `spotify.device` in `config.toml` to the exact device name.
+Distro packages of yt-dlp go stale and YouTube breaks often, so keep it updated:
 
-### Configure
+```bash
+yt-dlp -U
+```
+
+### 3. Install spotifyd (Spotify only)
+
+Skip this step if you don't use Spotify.
+
+Install spotifyd from your package manager (`sudo pacman -S spotifyd`, `brew install spotifyd`) or from the [releases page](https://github.com/Spotifyd/spotifyd/releases), then log it in with your Spotify account following the [spotifyd docs](https://docs.spotifyd.rs) (recent versions use `spotifyd authenticate`; older ones take credentials in `spotifyd.conf`). Keep the default device name, or set one that contains `spotifyd`:
+
+```toml
+[global]
+device_name = "spotifyd"
+```
+
+Start it before launching Termix (`spotifyd --no-daemon` in a second terminal, or as a user service). Termix picks the spotifyd Spotify Connect device automatically by its `spotifyd@...` name, or failing that by its "Speaker" type, so your phone or desktop app being online doesn't matter. If it still can't tell, set `spotify.device` in `config.toml` to the exact device name.
+
+### 4. Create a Spotify app (Spotify only)
+
+1. Go to the [Spotify developer dashboard](https://developer.spotify.com/dashboard) and create an app.
+2. Under **Redirect URIs** add exactly `http://127.0.0.1:8080/callback`.
+3. Copy the **Client ID** and **Client secret** for the next step.
+
+### 5. Configure Termix
 
 Run Termix once and it writes a commented `config.toml` to your user config directory and prints the path:
 
@@ -99,21 +155,37 @@ Run Termix once and it writes a commented `config.toml` to your user config dire
 | Windows | `%AppData%\termix\config.toml` |
 | macOS | `~/Library/Application Support/termix/config.toml` |
 
-Open it and fill in `client_id` and `client_secret` under `[spotify]` (from the [Spotify developer dashboard](https://developer.spotify.com/dashboard)). The other keys are optional: a Last.fm key for smart shuffle, the spotifyd device name, your music folder and the yt-dlp path.
+Open it and fill in `client_id` and `client_secret` under `[spotify]`. The other keys are optional: a Last.fm key for smart shuffle, the spotifyd device name, your music folder (default: your home `Music` folder) and the yt-dlp path.
+
+```toml
+[spotify]
+client_id = "..."
+client_secret = "..."
+
+[lastfm]
+api_key = "..."          # optional, enables smart shuffle
+
+[local]
+music_dir = ""           # optional, default ~/Music
+```
 
 If you'd rather keep the config next to the binary, copy `config.example.toml` beside `termix` as `config.toml`; that file is used first. `TERMIX_CONFIG=/path/to/file` overrides both. The environment variables `SPOTIFY_ID`, `SPOTIFY_SECRET`, `LASTFM_API_KEY`, `TERMIX_SPOTIFY_DEVICE`, `TERMIX_MUSIC_DIR` and `TERMIX_YTDLP` still override individual values from the file.
 
-Authenticate once:
+### 6. Log in to Spotify (Spotify only)
 
 ```bash
 termix auth
 ```
 
-Run:
+This prints a URL. Open it, approve the app, and the browser redirects back to Termix. The token is saved next to `config.toml` and refreshed automatically, so you only do this once.
+
+### 7. Run
 
 ```bash
-go run ./cmd
+termix
 ```
+
+Or, from a source checkout, `go run ./cmd`.
 
 ---
 
@@ -164,10 +236,10 @@ termix/
 
 ## In Progress
 
-- Spotify search and library browsing
-- YouTube search integration
+- Spotify library browsing
 - Local library indexing
 - Federated search across all sources
+- Queue cursor (`Shift+Enter` insert-next and `d` remove are not wired up yet)
 - Queue persistence
 - Album artwork (Kitty graphics protocol)
 
