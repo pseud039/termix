@@ -43,6 +43,12 @@ func oauthConfig(creds Credentials) (*oauth2.Config, error) {
 			"user-read-playback-state",
 			"user-modify-playback-state",
 			"user-read-currently-playing",
+			// Library tab: Liked Songs and the user's playlists. A token
+			// saved before these were added lacks them, so the tab asks
+			// for `termix auth` to be run again.
+			"user-library-read",
+			"playlist-read-private",
+			"playlist-read-collaborative",
 		},
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  "https://accounts.spotify.com/authorize",

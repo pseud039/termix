@@ -61,11 +61,15 @@ func main() {
 	// Only sources whose provider was created go in the map; the Search tab
 	// shows how to enable the rest.
 	searchers := map[queue.SourceType]app.Searcher{}
+	// library stays a nil interface when Spotify is off so the Library tab
+	// can tell the user to run `termix auth`.
+	var library app.Library
 	if spClient, err := spotifyclient.NewClient(ctx, creds); err != nil {
 		fmt.Fprintf(os.Stderr, "note: Spotify not connected (%v)\n", err)
 	} else {
 		router.SetSpotifyPlayer(player.NewSpotifyPlayer(spClient, cfg.Spotify.Device))
 		searchers[queue.SourceSpotify] = spotifyclient.NewSearchProvider(spClient)
+		library = spotifyclient.NewLibrary(spClient)
 	}
 	if yt, err := youtube.NewSearchProvider(cfg.YouTube.YTDLP); err != nil {
 		fmt.Fprintf(os.Stderr, "note: YouTube search off (%v)\n", err)
@@ -102,7 +106,7 @@ func main() {
 	}
 	lyr := lyrics.NewClient(lyricsCache)
 
-	model := app.New(ctx, q, router, mpv, mpvErr, searchers, recommender, lyr)
+	model := app.New(ctx, q, router, mpv, mpvErr, searchers, recommender, lyr, library)
 
 	p := tea.NewProgram(
 		model,

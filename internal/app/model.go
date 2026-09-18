@@ -13,6 +13,7 @@ import (
 	"github.com/pseud039/termix/internal/player"
 	"github.com/pseud039/termix/internal/queue"
 	"github.com/pseud039/termix/internal/recommend"
+	"github.com/pseud039/termix/internal/spotify"
 )
 
 // TickMsg fires every second from the tea.Tick loop.
@@ -90,9 +91,10 @@ const (
 	tabQueue tab = iota
 	tabSearch
 	tabLyrics
+	tabLibrary
 )
 
-var tabNames = []string{"Queue", "Search", "Lyrics"}
+var tabNames = []string{"Queue", "Search", "Lyrics", "Library"}
 
 // Model holds all application state.
 type Model struct {
@@ -151,6 +153,21 @@ type Model struct {
 	lyricsOffset  time.Duration // user nudge; positive shows lyrics later
 	lastPollAt    time.Time     // when position was last read, for interpolation
 	lyricsTicking bool          // a lyricsTickMsg chain is running
+
+	// Library pane (Spotify Liked Songs and playlists); see library.go
+	library        Library // nil = Spotify not connected
+	libLevel       int     // libLevelPlaylists or libLevelTracks
+	libPlaylists   []spotify.Playlist
+	libLoaded      bool // playlists fetched at least once
+	libLoading     bool
+	libErr         error
+	libCursor      int // cursor in the playlist list
+	libSeq         int // identifies the fetches whose answers we still want
+	libOpen        spotify.Playlist         // the playlist whose tracks are shown
+	libTracks      map[string]*libTrackList // session cache by Playlist.Key
+	libTrackCursor int
+	libAddAllKey   string // while set, pages arriving for this key are queued
+	libAddAllCount int    // tracks queued so far by the current add-all
 }
 
 // New builds the Model. mpvErr is the result of mpv.Start; when non-nil it is
@@ -158,8 +175,9 @@ type Model struct {
 // searchers holds one Searcher per available source; the Search tab explains
 // how to enable any that are missing. recommender may be nil, in which case
 // smart shuffle is unavailable and z only toggles plain shuffle. lyr fetches
-// lyrics for each track that starts; nil turns the Lyrics tab off.
-func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher, recommender *recommend.Recommender, lyr *lyrics.Client) Model {
+// lyrics for each track that starts; nil turns the Lyrics tab off. lib
+// browses the user's Spotify library; nil when Spotify isn't connected.
+func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher, recommender *recommend.Recommender, lyr *lyrics.Client, lib Library) Model {
 	m := Model{
 		queue:        q,
 		router:       r,
@@ -172,6 +190,8 @@ func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvP
 		mpvReady:     mpvErr == nil,
 		lyricsClient: lyr,
 		lyricsCursor: -1,
+		library:      lib,
+		libTracks:    map[string]*libTrackList{},
 	}
 	if mpvErr != nil {
 		m.statusMsg = mpvErr.Error()
@@ -348,6 +368,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchCursor = 0
 		m.searchErr = msg.err
 
+	case libPlaylistsMsg:
+		return m.handleLibPlaylistsMsg(msg)
+
+	case libTracksMsg:
+		return m.handleLibTracksMsg(msg)
+
 	case recommendationsMsg:
 		if msg.seq != m.recSeq {
 			return m, nil
@@ -417,6 +443,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.lyricsTicking = true
 			return m, lyricsTickCmd()
 		}
+	case "4":
+		return m.openLibraryTab()
 
 	case " ":
 		return m, m.togglePauseCmd()
@@ -454,9 +482,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchQuery = ""
 		}
 
+	// Library tab: a queues a whole playlist, R refetches, esc/backspace
+	// step back out of a playlist.
+	case "a":
+		if m.activeTab == tabLibrary {
+			return m.libAddAll()
+		}
+	case "R":
+		if m.activeTab == tabLibrary {
+			return m.libRefresh()
+		}
+	case "backspace":
+		if m.activeTab == tabLibrary {
+			m = m.libBack()
+		}
+
 	case "esc":
-		if m.activeTab == tabLyrics {
+		switch m.activeTab {
+		case tabLyrics:
 			m.lyricsCursor = -1
+		case tabLibrary:
+			m = m.libBack()
 		}
 
 	case "up", "k":
@@ -467,6 +513,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case tabLyrics:
 			m.moveLyricsCursor(-1)
+		case tabLibrary:
+			m.libMoveCursor(-1)
 		}
 	case "down", "j":
 		switch m.activeTab {
@@ -476,6 +524,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case tabLyrics:
 			m.moveLyricsCursor(+1)
+		case tabLibrary:
+			m.libMoveCursor(+1)
 		}
 
 	case "enter":
@@ -492,21 +542,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case tabSearch:
 			if m.searchCursor < len(m.searchResults) {
-				item := m.searchResults[m.searchCursor]
-				// With shuffle on the item lands somewhere in the upcoming
-				// part of the queue rather than at the end.
-				idx := m.queue.Add(item)
-				m.statusIsErr = false
-				m.statusMsg = fmt.Sprintf("added to queue: %s — %s", item.Artist, item.Title)
-				// Nothing playing (empty queue, or the queue ran out): start
-				// the track just added instead of waiting for [n].
-				if !m.hasTrack && !m.autoStarting {
-					m.autoStarting = true
-					m.failStreak = 0
-					m.queue.JumpTo(idx)
-					return m, m.playCurrentQueueItemCmd()
-				}
+				return m.addToQueue(m.searchResults[m.searchCursor])
 			}
+		case tabLibrary:
+			return m.libEnter()
 		}
 	}
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/pseud039/termix/internal/lyrics"
 	"github.com/pseud039/termix/internal/queue"
+	"github.com/pseud039/termix/internal/spotify"
 )
 
 var (
@@ -76,7 +77,7 @@ func (m Model) renderHeader() string {
 
 	right := lipgloss.NewStyle().
 		Foreground(colMuted).
-		Render("[1-3] tabs  [space] play/pause  [n/p] next/prev  [z/r] shuffle/repeat  [q] quit")
+		Render("[1-4] tabs  [space] play/pause  [n/p] next/prev  [z/r] shuffle/repeat  [q] quit")
 
 	gap := m.width - lipgloss.Width(title) - lipgloss.Width(tabRow) - lipgloss.Width(right)
 	if gap < 0 {
@@ -253,6 +254,8 @@ func (m Model) renderContent(height int) string {
 		return m.renderSearch(height)
 	case tabLyrics:
 		return m.renderLyrics(height)
+	case tabLibrary:
+		return m.renderLibrary(height)
 	}
 	return ""
 }
@@ -420,59 +423,172 @@ func (m Model) renderSearchModes() string {
 // renderSearchResults lists search results with the cursor row
 // highlighted, scrolling so the cursor stays visible within height rows.
 func (m Model) renderSearchResults(height int) string {
-	if height < 1 {
-		height = 1
-	}
-	start := 0
-	if m.searchCursor >= height {
-		start = m.searchCursor - height + 1
-	}
-	end := start + height
-	if end > len(m.searchResults) {
-		end = len(m.searchResults)
-	}
-
+	start, end := visibleRange(len(m.searchResults), height, m.searchCursor)
 	var rows []string
 	for i := start; i < end; i++ {
-		item := m.searchResults[i]
-		row := fmt.Sprintf("%-36s  %-24s  %s",
-			truncate(item.Title, 36), truncate(item.Artist, 24), formatLength(item.Duration))
-		if i == m.searchCursor {
-			row = lipgloss.NewStyle().
-				Foreground(colAccent).
-				Bold(true).
-				Background(colSurface).
-				Width(m.width - 2).
-				PaddingLeft(1).
-				Render("▶ " + row)
-		} else {
-			row = lipgloss.NewStyle().
-				Foreground(colText).
-				Width(m.width - 2).
-				PaddingLeft(1).
-				Render("  " + row)
-		}
-		rows = append(rows, row)
+		rows = append(rows, m.renderCursorRow(trackRow(m.searchResults[i]), i == m.searchCursor))
 	}
 	return strings.Join(rows, "\n")
 }
 
-func (m Model) renderLyrics(height int) string {
-	frame := lipgloss.NewStyle().Width(m.width).Height(height)
+// trackRow lays out one track the way the Search and Library lists show it.
+func trackRow(item queue.Item) string {
+	return fmt.Sprintf("%-36s  %-24s  %s",
+		truncate(item.Title, 36), truncate(item.Artist, 24), formatLength(item.Duration))
+}
 
-	// centered draws a short message in the middle of the pane, the way
-	// the empty queue does.
-	centered := func(msg string, color lipgloss.Color) string {
-		return frame.Render(lipgloss.NewStyle().
+// visibleRange returns the [start, end) slice of n rows that fits in
+// height rows while keeping the cursor visible, scrolling from the top.
+func visibleRange(n, height, cursor int) (int, int) {
+	if height < 1 {
+		height = 1
+	}
+	start := 0
+	if cursor >= height {
+		start = cursor - height + 1
+	}
+	end := start + height
+	if end > n {
+		end = n
+	}
+	if start > end {
+		start = end
+	}
+	return start, end
+}
+
+// renderCursorRow draws a list row, highlighted when the cursor is on it.
+func (m Model) renderCursorRow(row string, active bool) string {
+	if active {
+		return lipgloss.NewStyle().
+			Foreground(colAccent).
+			Bold(true).
+			Background(colSurface).
+			Width(m.width - 2).
+			PaddingLeft(1).
+			Render("▶ " + row)
+	}
+	return lipgloss.NewStyle().
+		Foreground(colText).
+		Width(m.width - 2).
+		PaddingLeft(1).
+		Render("  " + row)
+}
+
+// centered draws a short message in the middle of a pane height rows
+// tall, the way the empty queue does.
+func (m Model) centered(height int, msg string, color lipgloss.Color) string {
+	return lipgloss.NewStyle().Width(m.width).Height(height).Render(
+		lipgloss.NewStyle().
 			Foreground(color).
 			Width(m.width).
 			Align(lipgloss.Center).
 			PaddingTop(height / 3).
 			Render(msg))
+}
+
+// renderLibrary draws the Spotify Library tab: the playlist list, or the
+// tracks of the playlist that was opened.
+func (m Model) renderLibrary(height int) string {
+	if m.library == nil {
+		return m.centered(height, "Spotify not connected\n\nRun `termix auth` to browse Liked Songs and playlists", colMuted)
+	}
+	if m.libLevel == libLevelTracks {
+		return m.renderLibraryTracks(height)
+	}
+	return m.renderLibraryPlaylists(height)
+}
+
+func (m Model) renderLibraryPlaylists(height int) string {
+	frame := lipgloss.NewStyle().Width(m.width).Height(height)
+	title := lipgloss.NewStyle().Foreground(colText).Bold(true).Render("Library") +
+		lipgloss.NewStyle().Foreground(colAccent).Render("  [spotify]")
+	if m.libLoading {
+		title += styleMuted.Render("  loading…")
+	}
+	hint := styleMuted.Render("[↑/↓] select  [enter] open  [a] add all to queue  [R] refresh")
+	head := "\n  " + title + "\n  " + hint + "\n\n"
+	bodyHeight := height - lipgloss.Height(head)
+	if bodyHeight < 1 {
+		bodyHeight = 1
 	}
 
+	var body string
+	switch {
+	case m.libErr != nil:
+		body = lipgloss.NewStyle().Foreground(colDanger).Render("  " + libraryErrorText(m.libErr))
+	case m.libLoading && !m.libLoaded:
+		body = styleMuted.Render("  Loading playlists…")
+	case m.libLoaded && len(m.libPlaylists) == 0:
+		body = styleMuted.Render("  No playlists in your library")
+	default:
+		start, end := visibleRange(len(m.libPlaylists), bodyHeight, m.libCursor)
+		var rows []string
+		for i := start; i < end; i++ {
+			rows = append(rows, m.renderCursorRow(playlistRow(m.libPlaylists[i]), i == m.libCursor))
+		}
+		body = strings.Join(rows, "\n")
+	}
+	return frame.Render(head + body)
+}
+
+// playlistRow lays out one playlist: name, owner and size.
+func playlistRow(p spotify.Playlist) string {
+	name := p.Name
+	if p.Liked {
+		name = "♥ " + name
+	}
+	return fmt.Sprintf("%-36s  %-24s  %d track%s",
+		truncate(name, 36), truncate(p.Owner, 24), p.Total, plural(p.Total))
+}
+
+func (m Model) renderLibraryTracks(height int) string {
+	frame := lipgloss.NewStyle().Width(m.width).Height(height)
+	list := m.libTracks[m.libOpen.Key()]
+
+	title := lipgloss.NewStyle().Foreground(colText).Bold(true).
+		Render(truncate("Library › "+m.libOpen.Name, m.width-24))
+	if list != nil {
+		switch {
+		case list.loading:
+			title += styleMuted.Render(fmt.Sprintf("  [%d of %d loaded]", len(list.items), list.total))
+		case list.done:
+			title += styleMuted.Render(fmt.Sprintf("  [%d track%s]", len(list.items), plural(len(list.items))))
+		}
+	}
+	hint := styleMuted.Render("[↑/↓] select  [enter] add  [a] add all  [esc] back  [R] refresh")
+	head := "\n  " + title + "\n  " + hint + "\n\n"
+	bodyHeight := height - lipgloss.Height(head)
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	var body string
+	switch {
+	case list == nil:
+		body = ""
+	case list.err != nil && len(list.items) == 0:
+		body = lipgloss.NewStyle().Foreground(colDanger).Render("  " + libraryErrorText(list.err))
+	case list.loading && len(list.items) == 0:
+		body = styleMuted.Render("  Loading tracks…")
+	case list.done && len(list.items) == 0:
+		body = styleMuted.Render("  No playable tracks in this playlist")
+	default:
+		start, end := visibleRange(len(list.items), bodyHeight, m.libTrackCursor)
+		var rows []string
+		for i := start; i < end; i++ {
+			rows = append(rows, m.renderCursorRow(trackRow(list.items[i]), i == m.libTrackCursor))
+		}
+		body = strings.Join(rows, "\n")
+	}
+	return frame.Render(head + body)
+}
+
+func (m Model) renderLyrics(height int) string {
+	frame := lipgloss.NewStyle().Width(m.width).Height(height)
+
 	if !m.hasTrack {
-		return centered("Nothing playing\n\nPress [2] to search and add tracks", colMuted)
+		return m.centered(height, "Nothing playing\n\nPress [2] to search and add tracks", colMuted)
 	}
 
 	var tag string

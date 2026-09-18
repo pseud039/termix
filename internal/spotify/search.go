@@ -33,25 +33,31 @@ func (s *SearchProvider) Search(ctx context.Context, q string) ([]queue.Item, er
 	}
 
 	items := make([]queue.Item, 0, len(result.Tracks.Tracks))
-	for _, t := range result.Tracks.Tracks {
-		artist := ""
-		if len(t.Artists) > 0 {
-			artist = t.Artists[0].Name
-		}
-		cover := ""
-		if len(t.Album.Images) > 0 {
-			cover = t.Album.Images[0].URL
-		}
-		items = append(items, queue.Item{
-			ID:       string(t.ID),
-			Title:    t.Name,
-			Artist:   artist,
-			Album:    t.Album.Name,
-			Duration: t.TimeDuration(),
-			Source:   queue.SourceSpotify,
-			URI:      string(t.URI),
-			CoverURL: cover,
-		})
+	for i := range result.Tracks.Tracks {
+		items = append(items, itemFromTrack(&result.Tracks.Tracks[i]))
 	}
 	return items, nil
+}
+
+// itemFromTrack boxes a Spotify track into the queue's common Item type.
+// Search results, Liked Songs and playlist entries all go through here.
+func itemFromTrack(t *zspotify.FullTrack) queue.Item {
+	artist := ""
+	if len(t.Artists) > 0 {
+		artist = t.Artists[0].Name
+	}
+	cover := ""
+	if len(t.Album.Images) > 0 {
+		cover = t.Album.Images[0].URL
+	}
+	return queue.Item{
+		ID:       string(t.ID),
+		Title:    t.Name,
+		Artist:   artist,
+		Album:    t.Album.Name,
+		Duration: t.TimeDuration(),
+		Source:   queue.SourceSpotify,
+		URI:      string(t.URI),
+		CoverURL: cover,
+	}
 }

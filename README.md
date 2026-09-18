@@ -179,6 +179,8 @@ termix auth
 
 This prints a URL. Open it, approve the app, and the browser redirects back to Termix. The token is saved next to `config.toml` and refreshed automatically, so you only do this once.
 
+The Library tab (`4`) lists your Liked Songs and playlists. It needs the library and playlist permissions, so if you logged in before that tab existed, run `termix auth` once more; the tab tells you when this is needed. Spotify-made playlists such as Discover Weekly cannot be read by third-party apps and show an error when opened.
+
 ### 7. Run
 
 ```bash
@@ -193,7 +195,7 @@ Or, from a source checkout, `go run ./cmd`.
 
 | Key | Action |
 |------|--------|
-| `1-3` | Switch tabs |
+| `1-4` | Switch tabs (Queue, Search, Lyrics, Library) |
 | `Space` | Play / Pause |
 | `n` / `p` | Next / Previous |
 | `←` `→` | Seek |
@@ -204,7 +206,10 @@ Or, from a source checkout, `go run ./cmd`.
 | `Enter` | Play / Add |
 | `Shift+Enter` | Insert next |
 | `d` | Remove from queue |
-| `j` / `k` | Move through search results or lyric lines |
+| `j` / `k` | Move through search results, library lists or lyric lines |
+| `Enter` (Library tab) | Open the selected playlist, or add the selected track to the queue |
+| `a` (Library tab) | Add every track of the playlist to the queue |
+| `Esc` (Library tab) | Back to the playlist list; `R` refetches from Spotify |
 | `Enter` (Lyrics tab) | Seek to the selected lyric line; `Esc` follows playback again |
 | `[` / `]` | Nudge lyric timing by 0.5s |
 | `q` | Quit |
@@ -224,7 +229,7 @@ termix/
     ├── config/           config.toml loading
     ├── queue/            shared track queue
     ├── player/           mpv and spotifyd backends, router
-    ├── spotify/          OAuth and search
+    ├── spotify/          OAuth, search, Liked Songs and playlists
     ├── youtube/          yt-dlp search
     ├── local/            local file search
     ├── lastfm/           similar-track lookups
@@ -236,7 +241,6 @@ termix/
 
 ## In Progress
 
-- Spotify library browsing
 - Local library indexing
 - Federated search across all sources
 - Queue cursor (`Shift+Enter` insert-next and `d` remove are not wired up yet)
