@@ -102,8 +102,8 @@ func (m Model) renderPlayerBar() string {
 		track = m.currentTrack.Title
 		artist = m.currentTrack.Artist
 	} else {
-		track = "No track"
-		artist = "—"
+		track = "Nothing playing"
+		artist = "[2] to search"
 	}
 
 	var badge string
@@ -140,10 +140,13 @@ func (m Model) renderPlayerBar() string {
 
 	timeStr := fmt.Sprintf("%s / %s",
 		formatDuration(m.position),
-		formatDuration(dur),
+		formatLength(dur),
 	)
 
-	volStr := fmt.Sprintf("vol %d%%", m.volume)
+	volStr := "vol --"
+	if m.volume >= 0 {
+		volStr = fmt.Sprintf("vol %d%%", m.volume)
+	}
 
 	left := lipgloss.JoinHorizontal(lipgloss.Center,
 		lipgloss.NewStyle().Foreground(colAccent).Bold(true).PaddingRight(2).Render(playIcon),
@@ -255,7 +258,7 @@ func (m Model) renderQueue(height int) string {
 		num := lipgloss.NewStyle().Foreground(colMuted).Render(fmt.Sprintf("%-4d", i+1))
 		title := truncate(item.Title, 36)
 		artist := truncate(item.Artist, 24)
-		dur := formatDuration(item.Duration)
+		dur := formatLength(item.Duration)
 
 		var src string
 		switch item.Source {
@@ -396,7 +399,7 @@ func (m Model) renderSearchResults(height int) string {
 	for i := start; i < end; i++ {
 		item := m.searchResults[i]
 		row := fmt.Sprintf("%-36s  %-24s  %s",
-			truncate(item.Title, 36), truncate(item.Artist, 24), formatDuration(item.Duration))
+			truncate(item.Title, 36), truncate(item.Artist, 24), formatLength(item.Duration))
 		if i == m.searchCursor {
 			row = lipgloss.NewStyle().
 				Foreground(colAccent).
@@ -451,6 +454,14 @@ func formatDuration(d time.Duration) string {
 	m := d / time.Minute
 	s := (d % time.Minute) / time.Second
 	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// formatLength formats a track length, showing "--:--" when it isn't known.
+func formatLength(d time.Duration) string {
+	if d <= 0 {
+		return "--:--"
+	}
+	return formatDuration(d)
 }
 
 func truncate(s string, max int) string {

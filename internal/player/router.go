@@ -76,11 +76,20 @@ func (r *Router) Seek(ctx context.Context, seconds float64) error {
 	return r.active.Seek(ctx, seconds)
 }
 
+// SetVolume and Volume fall back to mpv when nothing is playing, so the
+// volume can be read and set before the first track starts.
 func (r *Router) SetVolume(ctx context.Context, pct int) error {
 	if r.active == nil {
-		return nil
+		return r.mpv.SetVolume(ctx, pct)
 	}
 	return r.active.SetVolume(ctx, pct)
+}
+
+func (r *Router) Volume(ctx context.Context) (int, error) {
+	if r.active == nil {
+		return r.mpv.Volume(ctx)
+	}
+	return r.active.Volume(ctx)
 }
 
 func (r *Router) Position(ctx context.Context) (float64, bool, error) {

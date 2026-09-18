@@ -147,6 +147,17 @@ func (s *SpotifyPlayer) SetVolume(ctx context.Context, pct int) error {
 	return s.client.VolumeOpt(ctx, pct, s.opts())
 }
 
+func (s *SpotifyPlayer) Volume(ctx context.Context) (int, error) {
+	state, err := s.client.PlayerState(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if state == nil {
+		return 0, fmt.Errorf("no active Spotify device")
+	}
+	return int(state.Device.Volume), nil
+}
+
 func (s *SpotifyPlayer) Position(ctx context.Context) (float64, bool, error) {
 	state, err := s.client.PlayerState(ctx)
 	if err != nil {

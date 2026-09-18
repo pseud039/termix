@@ -25,6 +25,9 @@ type Player interface {
 	// SetVolume takes 0–100.
 	SetVolume(ctx context.Context, pct int) error
 
+	// Volume returns the current volume, 0–100.
+	Volume(ctx context.Context) (int, error)
+
 	// Position returns elapsed seconds. The second return is whether
 	// playback is active at all (false when stopped/no track).
 	Position(ctx context.Context) (float64, bool, error)

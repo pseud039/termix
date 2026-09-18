@@ -134,6 +134,18 @@ func (q *Queue) Remove(index int) {
 	}
 }
 
+// SetDuration fills in the length of every item with the given ID whose
+// length isn't known yet (local files only learn it once mpv plays them).
+func (q *Queue) SetDuration(id string, d time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i := range q.items {
+		if q.items[i].ID == id && q.items[i].Duration == 0 {
+			q.items[i].Duration = d
+		}
+	}
+}
+
 // Items returns a snapshot copy so callers can read without holding the lock.
 func (q *Queue) Items() []Item {
 	q.mu.Lock()

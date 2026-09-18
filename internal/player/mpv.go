@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -209,6 +210,13 @@ func (m *MpvPlayer) send(args ...any) (response, error) {
 	data = append(data, '\n')
 
 	m.mu.Lock()
+	if m.conn == nil {
+		m.mu.Unlock()
+		m.rmu.Lock()
+		delete(m.replies, id)
+		m.rmu.Unlock()
+		return response{}, errors.New("mpv is not running")
+	}
 	_, err = m.conn.Write(data)
 	m.mu.Unlock()
 	if err != nil {
@@ -255,6 +263,18 @@ func (m *MpvPlayer) Seek(_ context.Context, seconds float64) error {
 func (m *MpvPlayer) SetVolume(_ context.Context, pct int) error {
 	_, err := m.send("set_property", "volume", pct)
 	return err
+}
+
+func (m *MpvPlayer) Volume(_ context.Context) (int, error) {
+	r, err := m.send("get_property", "volume")
+	if err != nil {
+		return 0, err
+	}
+	vol, ok := r.Data.(float64)
+	if !ok {
+		return 0, errors.New("mpv: volume unavailable")
+	}
+	return int(math.Round(vol)), nil
 }
 
 func (m *MpvPlayer) Position(_ context.Context) (float64, bool, error) {

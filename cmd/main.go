@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -56,26 +55,11 @@ func main() {
 	}
 	searchers[queue.SourceLocal] = local.NewSearchProvider(musicDir())
 
-	loadDemoQueue(q)
-	q.JumpTo(0)
-
 	// A failed mpv start is not fatal: the TUI still runs and shows the error
 	// in the status line; only local/YouTube playback is unavailable.
 	mpvErr := mpv.Start(ctx)
-	mpvReady := mpvErr == nil
 	if mpvErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", mpvErr)
-	}
-
-	// Auto-play only mpv-backed items; Spotify needs a device and a login.
-	if mpvReady {
-		if item, ok := q.Current(); ok {
-			if item.Source == queue.SourceLocal || item.Source == queue.SourceYouTube {
-				if err := router.Play(ctx, item); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not start initial playback: %v\n", err)
-				}
-			}
-		}
 	}
 
 	model := app.New(ctx, q, router, mpv, mpvErr, searchers)
@@ -143,33 +127,4 @@ func loadDotEnv(path string) error {
 	}
 
 	return nil
-}
-
-func loadDemoQueue(q *queue.Queue) {
-	q.Add(queue.Item{
-		ID:       "local-1",
-		Title:    "Replace me with a real path",
-		Artist:   "Local File",
-		Album:    "Your Music",
-		Source:   queue.SourceLocal,
-		URI:      "C:\\Users\\gunsh\\Music\\aae_ganpat_bjana.mp3",
-		Duration: 121 * time.Second,
-	})
-	q.Add(queue.Item{
-		ID:       "yt-1",
-		Title:    "Never Gonna Give You Up",
-		Artist:   "Rick Astley",
-		Album:    "Whenever You Need Somebody",
-		Source:   queue.SourceYouTube,
-		URI:      "ytdl://dQw4w9WgXcQ",
-		Duration: 0, // unknown until mpv probes the file
-	})
-	q.Add(queue.Item{
-		ID:     "spotify-1",
-		Title:  "Blinding Lights",
-		Artist: "The Weeknd",
-		Album:  "After Hours",
-		Source: queue.SourceSpotify,
-		URI:    "spotify:track:0VjIjW4GlUZAMYd2vXMi3b",
-	})
 }

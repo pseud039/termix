@@ -29,6 +29,10 @@ type TrackStartMsg struct{ Item queue.Item }
 // current track ended ("eof") or failed ("error").
 type QueueAdvanceMsg struct{}
 
+// queueEndedMsg is sent when the last track finishes and there is nothing
+// left to play.
+type queueEndedMsg struct{}
+
 // mpvEventMsg wraps an event read from the mpv events channel.
 type mpvEventMsg struct{ ev player.MpvEvent }
 
@@ -76,9 +80,11 @@ type Model struct {
 	playing      bool
 	position     time.Duration
 	duration     time.Duration // total length of current track; 0 = unknown
-	volume       int
+	volume       int           // -1 until the first poll reads it from the player
+	volumeSetAt  time.Time     // last +/- press; polls just after it are ignored
 	currentTrack queue.Item
 	hasTrack     bool
+	autoStarting bool // a track added to an idle queue is being started
 
 	// Whether mpv started successfully — gates playback-related UI hints
 	mpvReady bool
@@ -107,7 +113,7 @@ func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvP
 		searchers:    searchers,
 		searchSource: queue.SourceSpotify,
 		ctx:          ctx,
-		volume:       80,
+		volume:       -1,
 		mpvReady:     mpvErr == nil,
 	}
 	if mpvErr != nil {
@@ -164,11 +170,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Neither should blank a length we already have.
 		if msg.Duration > 0 {
 			m.duration = msg.Duration
+			// Save the length on the queue item if it didn't have one
+			// (local files). The ID check skips a poll that started before
+			// the track changed.
+			if m.hasTrack && msg.TrackID == m.currentTrack.ID && m.currentTrack.Duration == 0 {
+				m.currentTrack.Duration = msg.Duration
+				m.queue.SetDuration(m.currentTrack.ID, msg.Duration)
+			}
 		}
-		// Don't overwrite volume here — we manage it locally to avoid
-		// the value jumping around during the poll round-trip.
+		// A poll that started before a +/- press would still carry the
+		// old volume, so give the new value a moment to settle.
+		if msg.Volume >= 0 && time.Since(m.volumeSetAt) > 2*time.Second {
+			m.volume = msg.Volume
+		}
 
 	case TrackStartMsg:
+		m.autoStarting = false
 		m.hasTrack = true
 		m.currentTrack = msg.Item
 		// Start from whatever the item knows; the next poll fills in the
@@ -180,6 +197,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case QueueAdvanceMsg:
 		return m, m.advanceQueueCmd()
+
+	case queueEndedMsg:
+		m.hasTrack = false
+		m.currentTrack = queue.Item{}
+		m.duration = 0
+		m.position = 0
+		m.statusIsErr = false
+		m.statusMsg = "end of queue — add more tracks from [2] Search"
 
 	case mpvEventMsg:
 		// Keep listening; see waitForMpvEventCmd.
@@ -215,6 +240,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchErr = msg.err
 
 	case ErrorMsg:
+		m.autoStarting = false
 		m.statusMsg = msg.Err.Error()
 		m.statusIsErr = true
 
@@ -260,9 +286,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "h":
 		return m, m.seekCmd(-10)
 	case "+", "=":
-		return m, m.volumeCmd(+5)
+		return m.changeVolume(+5)
 	case "-":
-		return m, m.volumeCmd(-5)
+		return m.changeVolume(-5)
 
 	case "/":
 		if m.activeTab == tabSearch {
@@ -289,6 +315,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.queue.Add(item)
 				m.statusIsErr = false
 				m.statusMsg = fmt.Sprintf("added to queue: %s — %s", item.Artist, item.Title)
+				// Nothing playing (empty queue, or the queue ran out): start
+				// the track just added instead of waiting for [n].
+				if !m.hasTrack && !m.autoStarting {
+					m.autoStarting = true
+					m.queue.JumpTo(m.queue.Len() - 1)
+					return m, m.playCurrentQueueItemCmd()
+				}
 			}
 		}
 	}
@@ -398,6 +431,7 @@ func (m Model) searchCmd(seq int, searcher Searcher, query string) tea.Cmd {
 // pollPlaybackCmd asks the active player for its position and duration.
 // It runs on every TickMsg.
 func (m Model) pollPlaybackCmd() tea.Cmd {
+	trackID := m.currentTrack.ID
 	return func() tea.Msg {
 		pos, playing, err := m.router.Position(m.ctx)
 		if err != nil {
@@ -409,11 +443,16 @@ func (m Model) pollPlaybackCmd() tea.Cmd {
 		if err != nil {
 			dur = 0
 		}
+		vol, err := m.router.Volume(m.ctx)
+		if err != nil {
+			vol = -1
+		}
 		return PlaybackStateMsg{
 			Playing:  playing,
 			Position: time.Duration(pos * float64(time.Second)),
 			Duration: time.Duration(dur * float64(time.Second)),
-			Volume:   m.volume,
+			Volume:   vol,
+			TrackID:  trackID,
 		}
 	}
 }
@@ -473,7 +512,13 @@ func (m Model) seekCmd(delta float64) tea.Cmd {
 	}
 }
 
-func (m Model) volumeCmd(delta int) tea.Cmd {
+// changeVolume shows the new volume right away and sends it to the player.
+// Until the first poll the real volume is unknown, so there's nothing to
+// step from yet.
+func (m Model) changeVolume(delta int) (tea.Model, tea.Cmd) {
+	if m.volume < 0 {
+		return m, nil
+	}
 	newVol := m.volume + delta
 	if newVol < 0 {
 		newVol = 0
@@ -481,17 +526,22 @@ func (m Model) volumeCmd(delta int) tea.Cmd {
 	if newVol > 100 {
 		newVol = 100
 	}
-	return func() tea.Msg {
+	m.volume = newVol
+	m.volumeSetAt = time.Now()
+	return m, func() tea.Msg {
 		if err := m.router.SetVolume(m.ctx, newVol); err != nil {
 			return ErrorMsg{err}
 		}
-		// Update volume locally immediately — don't wait for the next poll tick.
-		return PlaybackStateMsg{Playing: m.playing, Position: m.position, Volume: newVol}
+		return nil
 	}
 }
 
 func (m Model) playCurrentQueueItemCmd() tea.Cmd {
 	return func() tea.Msg {
+		// Nothing has played yet: start from the top of the queue.
+		if m.queue.CurrentIndex() < 0 {
+			m.queue.JumpTo(0)
+		}
 		item, ok := m.queue.Current()
 		if !ok {
 			return nil
@@ -507,11 +557,7 @@ func (m Model) advanceQueueCmd() tea.Cmd {
 	return func() tea.Msg {
 		item, ok := m.queue.Next()
 		if !ok {
-			// End of queue — update status bar but don't error.
-			return TrackStartMsg{Item: queue.Item{
-				Title:  "End of queue",
-				Artist: "Add more tracks with [2] Search",
-			}}
+			return queueEndedMsg{}
 		}
 		if err := m.router.Play(m.ctx, item); err != nil {
 			return ErrorMsg{err}
