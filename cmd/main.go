@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/pseud039/termix/internal/app"
+	"github.com/pseud039/termix/internal/local"
 	"github.com/pseud039/termix/internal/player"
 	"github.com/pseud039/termix/internal/queue"
 	spotifyclient "github.com/pseud039/termix/internal/spotify"
+	"github.com/pseud039/termix/internal/youtube"
 )
 
 func main() {
@@ -37,14 +40,21 @@ func main() {
 
 	// Spotify is optional: without a saved login, Spotify items fail with a
 	// "run `termix auth` first" error and everything else still works.
-	var spotifySearch *spotifyclient.SearchProvider
+	// Only sources whose provider was created go in the map; the Search tab
+	// shows how to enable the rest.
+	searchers := map[queue.SourceType]app.Searcher{}
 	if spClient, err := spotifyclient.NewClient(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "note: Spotify not connected (%v)\n", err)
 	} else {
 		router.SetSpotifyPlayer(player.NewSpotifyPlayer(spClient))
-		spotifySearch = spotifyclient.NewSearchProvider(spClient)
+		searchers[queue.SourceSpotify] = spotifyclient.NewSearchProvider(spClient)
 	}
-	_ = spotifySearch // wired into the Search pane once that lands
+	if yt, err := youtube.NewSearchProvider(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: YouTube search off (%v)\n", err)
+	} else {
+		searchers[queue.SourceYouTube] = yt
+	}
+	searchers[queue.SourceLocal] = local.NewSearchProvider(musicDir())
 
 	loadDemoQueue(q)
 	q.JumpTo(0)
@@ -68,7 +78,7 @@ func main() {
 		}
 	}
 
-	model := app.New(ctx, q, router, mpv, mpvErr)
+	model := app.New(ctx, q, router, mpv, mpvErr, searchers)
 
 	p := tea.NewProgram(
 		model,
@@ -82,6 +92,18 @@ func main() {
 	}
 
 	mpv.Shutdown()
+}
+
+// musicDir is where local search looks: TERMIX_MUSIC_DIR, else ~/Music.
+func musicDir() string {
+	if d := os.Getenv("TERMIX_MUSIC_DIR"); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "Music"
+	}
+	return filepath.Join(home, "Music")
 }
 
 func loadDotEnv(path string) error {

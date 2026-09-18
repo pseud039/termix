@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -31,6 +32,20 @@ type QueueAdvanceMsg struct{}
 // mpvEventMsg wraps an event read from the mpv events channel.
 type mpvEventMsg struct{ ev player.MpvEvent }
 
+// Searcher finds tracks for the Search tab. The Spotify, YouTube and local
+// search providers all satisfy it.
+type Searcher interface {
+	Search(ctx context.Context, q string) ([]queue.Item, error)
+}
+
+// searchResultsMsg carries the outcome of a search. seq identifies the
+// search it answers so results from an older query are ignored.
+type searchResultsMsg struct {
+	seq   int
+	items []queue.Item
+	err   error
+}
+
 type tab int
 
 const (
@@ -44,10 +59,11 @@ var tabNames = []string{"Queue", "Search", "Lyrics"}
 // Model holds all application state.
 type Model struct {
 	// Injected subsystems
-	queue  *queue.Queue
-	router *player.Router
-	mpv    *player.MpvPlayer
-	ctx    context.Context
+	queue     *queue.Queue
+	router    *player.Router
+	mpv       *player.MpvPlayer
+	searchers map[queue.SourceType]Searcher // a source is missing when it isn't available
+	ctx       context.Context
 
 	// TUI layout
 	activeTab   tab
@@ -68,20 +84,31 @@ type Model struct {
 	mpvReady bool
 
 	// Search pane
-	searchQuery string
-	searchMode  bool
+	searchQuery   string
+	searchMode    bool
+	searchSource  queue.SourceType
+	lastQuery     string
+	searching     bool
+	searchSeq     int
+	searchResults []queue.Item
+	searchCursor  int
+	searchErr     error
 }
 
 // New builds the Model. mpvErr is the result of mpv.Start; when non-nil it is
 // shown in the status line so the user sees why local/YouTube playback is off.
-func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error) Model {
+// searchers holds one Searcher per available source; the Search tab explains
+// how to enable any that are missing.
+func New(ctx context.Context, q *queue.Queue, r *player.Router, mpv *player.MpvPlayer, mpvErr error, searchers map[queue.SourceType]Searcher) Model {
 	m := Model{
-		queue:    q,
-		router:   r,
-		mpv:      mpv,
-		ctx:      ctx,
-		volume:   80,
-		mpvReady: mpvErr == nil,
+		queue:        q,
+		router:       r,
+		mpv:          mpv,
+		searchers:    searchers,
+		searchSource: queue.SourceSpotify,
+		ctx:          ctx,
+		volume:       80,
+		mpvReady:     mpvErr == nil,
 	}
 	if mpvErr != nil {
 		m.statusMsg = mpvErr.Error()
@@ -178,6 +205,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Batch(cmds...)
 
+	case searchResultsMsg:
+		if msg.seq != m.searchSeq {
+			return m, nil
+		}
+		m.searching = false
+		m.searchResults = msg.items
+		m.searchCursor = 0
+		m.searchErr = msg.err
+
 	case ErrorMsg:
 		m.statusMsg = msg.Err.Error()
 		m.statusIsErr = true
@@ -192,6 +228,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searchMode {
 		return m.handleSearchKey(msg)
+	}
+
+	// On the Search tab s/y/l pick the search source, so they must be
+	// checked before the global keys (l would otherwise seek).
+	if m.activeTab == tabSearch {
+		if src, ok := searchModeKeys[msg.String()]; ok {
+			return m.setSearchSource(src)
+		}
 	}
 
 	switch msg.String() {
@@ -226,9 +270,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchQuery = ""
 		}
 
+	case "up", "k":
+		if m.activeTab == tabSearch && m.searchCursor > 0 {
+			m.searchCursor--
+		}
+	case "down", "j":
+		if m.activeTab == tabSearch && m.searchCursor < len(m.searchResults)-1 {
+			m.searchCursor++
+		}
+
 	case "enter":
-		if m.activeTab == tabQueue {
+		switch m.activeTab {
+		case tabQueue:
 			return m, m.playCurrentQueueItemCmd()
+		case tabSearch:
+			if m.searchCursor < len(m.searchResults) {
+				item := m.searchResults[m.searchCursor]
+				m.queue.Add(item)
+				m.statusIsErr = false
+				m.statusMsg = fmt.Sprintf("added to queue: %s — %s", item.Artist, item.Title)
+			}
 		}
 	}
 
@@ -243,15 +304,95 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.searchQuery) > 0 {
 			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
 		}
+	case "tab":
+		m.searchSource = cycleSource(m.searchSource, +1)
+	case "shift+tab":
+		m.searchSource = cycleSource(m.searchSource, -1)
 	case "enter":
 		m.searchMode = false
-		// TODO M3: trigger source search
+		query := strings.TrimSpace(m.searchQuery)
+		if query == "" {
+			return m, nil
+		}
+		return m.startSearch(query)
 	default:
 		if len(msg.String()) == 1 {
 			m.searchQuery += msg.String()
 		}
 	}
 	return m, nil
+}
+
+// searchSources is the order Tab cycles through.
+var searchSources = []queue.SourceType{queue.SourceSpotify, queue.SourceYouTube, queue.SourceLocal}
+
+var searchModeKeys = map[string]queue.SourceType{
+	"s": queue.SourceSpotify,
+	"y": queue.SourceYouTube,
+	"l": queue.SourceLocal,
+}
+
+func cycleSource(cur queue.SourceType, step int) queue.SourceType {
+	for i, s := range searchSources {
+		if s == cur {
+			n := len(searchSources)
+			return searchSources[((i+step)%n+n)%n]
+		}
+	}
+	return queue.SourceSpotify
+}
+
+// setSearchSource switches the search mode and re-runs the last query on
+// the new source so the results match the label.
+func (m Model) setSearchSource(src queue.SourceType) (tea.Model, tea.Cmd) {
+	if src == m.searchSource {
+		return m, nil
+	}
+	m.searchSource = src
+	if m.lastQuery == "" {
+		return m, nil
+	}
+	return m.startSearch(m.lastQuery)
+}
+
+// searchUnavailableHint explains how to enable a source that has no Searcher.
+func searchUnavailableHint(src queue.SourceType) string {
+	switch src {
+	case queue.SourceSpotify:
+		return "Spotify not connected — run `termix auth` to enable search"
+	case queue.SourceYouTube:
+		return "yt-dlp not found — install it or set TERMIX_YTDLP"
+	}
+	return src.String() + " search is not available"
+}
+
+func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
+	m.lastQuery = query
+	m.searchResults = nil
+	m.searchCursor = 0
+	m.searchErr = nil
+	// Bump seq even when the source is unavailable so a search still in
+	// flight for the previous source can't fill in results under this label.
+	m.searchSeq++
+	searcher, ok := m.searchers[m.searchSource]
+	if !ok {
+		m.searching = false
+		m.statusMsg = searchUnavailableHint(m.searchSource)
+		m.statusIsErr = true
+		return m, nil
+	}
+	m.searching = true
+	return m, m.searchCmd(m.searchSeq, searcher, query)
+}
+
+func (m Model) searchCmd(seq int, searcher Searcher, query string) tea.Cmd {
+	return func() tea.Msg {
+		// yt-dlp can take a while to answer, so allow more than a web API call.
+		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+		defer cancel()
+		items, err := searcher.Search(ctx, query)
+		return searchResultsMsg{seq: seq, items: items, err: err}
+	}
 }
 
 // pollPlaybackCmd asks the active player for its position and duration.

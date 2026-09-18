@@ -313,10 +313,11 @@ func (m Model) renderSearch(height int) string {
 		BorderForeground(colAccent).
 		Width(m.width - 4)
 
-	hint := styleMuted.Render("Press [/] to search across Spotify, YouTube, and local files")
+	hint := styleMuted.Render("[/] type  [s/y/l] mode  [tab] mode while typing  [↑/↓] select  [enter] add")
 
 	b.WriteString("\n")
 	b.WriteString(promptStyle.Render("  Search  "))
+	b.WriteString(m.renderSearchModes())
 	b.WriteString("\n\n")
 
 	query := m.searchQuery
@@ -330,15 +331,90 @@ func (m Model) renderSearch(height int) string {
 	b.WriteString(hint)
 	b.WriteString("\n\n")
 
-	if !m.searchMode {
-		b.WriteString(styleMuted.Render("  Source adapters available after running `termix auth`.\n"))
-		b.WriteString(styleMuted.Render("  Local files: set music_dir in ~/.config/termix/config.toml\n"))
+	switch {
+	case m.searching:
+		b.WriteString(styleMuted.Render("  Searching…"))
+	case m.searchErr != nil:
+		b.WriteString(lipgloss.NewStyle().Foreground(colDanger).Render("  Search failed: " + m.searchErr.Error()))
+	case len(m.searchResults) > 0:
+		b.WriteString(m.renderSearchResults(height - lipgloss.Height(b.String())))
+	case m.searchSeq > 0 && !m.searchMode:
+		b.WriteString(styleMuted.Render("  No results"))
+	case m.searchers[m.searchSource] == nil && !m.searchMode:
+		b.WriteString(styleMuted.Render("  " + searchUnavailableHint(m.searchSource)))
 	}
 
 	return lipgloss.NewStyle().
 		Width(m.width).
 		Height(height).
 		Render(b.String())
+}
+
+// renderSearchModes draws the source labels, highlighting the active one in
+// the same colour as its queue badge.
+func (m Model) renderSearchModes() string {
+	labels := map[queue.SourceType]string{
+		queue.SourceSpotify: "Spotify",
+		queue.SourceYouTube: "YouTube",
+		queue.SourceLocal:   "Local",
+	}
+	colors := map[queue.SourceType]lipgloss.Color{
+		queue.SourceSpotify: colAccent,
+		queue.SourceYouTube: colDanger,
+		queue.SourceLocal:   colAccent2,
+	}
+	var parts []string
+	for _, src := range searchSources {
+		if src == m.searchSource {
+			parts = append(parts, lipgloss.NewStyle().
+				Foreground(colors[src]).
+				Bold(true).
+				Render("["+strings.ToUpper(labels[src])+"]"))
+		} else {
+			parts = append(parts, styleMuted.Render(labels[src]))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+// renderSearchResults lists search results with the cursor row
+// highlighted, scrolling so the cursor stays visible within height rows.
+func (m Model) renderSearchResults(height int) string {
+	if height < 1 {
+		height = 1
+	}
+	start := 0
+	if m.searchCursor >= height {
+		start = m.searchCursor - height + 1
+	}
+	end := start + height
+	if end > len(m.searchResults) {
+		end = len(m.searchResults)
+	}
+
+	var rows []string
+	for i := start; i < end; i++ {
+		item := m.searchResults[i]
+		row := fmt.Sprintf("%-36s  %-24s  %s",
+			truncate(item.Title, 36), truncate(item.Artist, 24), formatDuration(item.Duration))
+		if i == m.searchCursor {
+			row = lipgloss.NewStyle().
+				Foreground(colAccent).
+				Bold(true).
+				Background(colSurface).
+				Width(m.width - 2).
+				PaddingLeft(1).
+				Render("▶ " + row)
+		} else {
+			row = lipgloss.NewStyle().
+				Foreground(colText).
+				Width(m.width - 2).
+				PaddingLeft(1).
+				Render("  " + row)
+		}
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (m Model) renderLyrics(height int) string {

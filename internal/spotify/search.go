@@ -18,11 +18,13 @@ func NewSearchProvider(client *zspotify.Client) *SearchProvider {
 	return &SearchProvider{client: client}
 }
 
-// Search queries Spotify for tracks matching q and returns up to 15
+// Search queries Spotify for tracks matching q and returns up to 10
 // results as queue.Items with Source == queue.SourceSpotify. Callers add
 // the one the user picks straight into the queue with q.Add(item).
+// 10 is the most Spotify allows for Development Mode apps (since Feb 2026);
+// anything higher fails with "Invalid limit".
 func (s *SearchProvider) Search(ctx context.Context, q string) ([]queue.Item, error) {
-	result, err := s.client.Search(ctx, q, zspotify.SearchTypeTrack, zspotify.Limit(15))
+	result, err := s.client.Search(ctx, q, zspotify.SearchTypeTrack, zspotify.Limit(10))
 	if err != nil {
 		return nil, err
 	}
