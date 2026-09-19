@@ -51,7 +51,7 @@ Termix itself is a single Go binary. Playback is done by external programs, so w
 |------------|-----------|-----------|
 | [mpv](https://mpv.io) | Local files and YouTube playback | Yes, unless you only use Spotify |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | YouTube search and playback (mpv calls it) | For YouTube |
-| [spotifyd](https://github.com/Spotifyd/spotifyd) | Spotify playback (runs as a Spotify Connect device) | For Spotify |
+| [spotifyd](https://github.com/Spotifyd/spotifyd) (Windows: [Nemesis-AS fork](https://github.com/Nemesis-AS/spotifyd)) | Spotify playback (runs as a Spotify Connect device) | **Required** for Spotify |
 | Spotify Premium account | Spotify playback and search | For Spotify |
 | Spotify developer app | Client ID and secret for the Web API | For Spotify |
 | [Last.fm API key](https://www.last.fm/api/account/create) | Smart shuffle (similar-track picks) | Optional |
@@ -121,7 +121,21 @@ yt-dlp -U
 
 Skip this step if you don't use Spotify.
 
-Install spotifyd from your package manager (`sudo pacman -S spotifyd`, `brew install spotifyd`) or from the [releases page](https://github.com/Spotifyd/spotifyd/releases), then log it in with your Spotify account following the [spotifyd docs](https://docs.spotifyd.rs) (recent versions use `spotifyd authenticate`; older ones take credentials in `spotifyd.conf`). Keep the default device name, or set one that contains `spotifyd`:
+> **Termix cannot play Spotify without spotifyd running.** Termix only sends commands through the Web API, and spotifyd does the actual playback.
+
+**Linux / macOS:** install spotifyd from your package manager (`sudo pacman -S spotifyd`, `brew install spotifyd`) or from the [releases page](https://github.com/Spotifyd/spotifyd/releases), then log it in with your Spotify account following the [spotifyd docs](https://docs.spotifyd.rs) (recent versions use `spotifyd authenticate`; older ones take credentials in `spotifyd.conf`).
+
+**Windows:** upstream spotifyd doesn't support Windows. Use the [Nemesis-AS fork](https://github.com/Nemesis-AS/spotifyd) instead. It has no prebuilt releases, so build it with [Rust](https://rustup.rs):
+
+```powershell
+git clone https://github.com/Nemesis-AS/spotifyd.git
+cd spotifyd
+cargo build --release
+```
+
+The binary ends up at `target\release\spotifyd.exe`. Put it on your `PATH`, then log in and configure it as described above.
+
+On every platform, keep the default device name, or set one that contains `spotifyd`:
 
 ```toml
 [global]
