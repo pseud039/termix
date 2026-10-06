@@ -28,7 +28,7 @@ Termix is a keyboard-first TUI music player built with Go and Bubble Tea. Instea
 
 https://github.com/user-attachments/assets/025d01b4-5d9e-4154-9104-6317647d84f1
 
-<img width="1516" height="1038" alt="image" src="https://github.com/user-attachments/assets/403d0a7c-cdd0-433f-a255-9f3b788f0044" />
+<!-- <img width="1516" height="1038" alt="image" src="https://github.com/user-attachments/assets/403d0a7c-cdd0-433f-a255-9f3b788f0044" /> -->
 
 
 ---
