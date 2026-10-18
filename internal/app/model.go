@@ -119,15 +119,16 @@ type Model struct {
 	statusIsErr bool
 
 	// Playback state — updated every second by pollPlaybackCmd
-	playing      bool
-	position     time.Duration
-	duration     time.Duration // total length of current track; 0 = unknown
-	volume       int           // -1 until the first poll reads it from the player
-	volumeSetAt  time.Time     // last +/- press; polls just after it are ignored
-	currentTrack queue.Item
-	hasTrack     bool
-	autoStarting bool // a track added to an idle queue is being started
-	failStreak   int  // consecutive tracks mpv failed to play; reset on success or a manual play
+	playing               bool
+	position              time.Duration
+	duration              time.Duration // total length of current track; 0 = unknown
+	volume                int           // -1 until the first poll reads it from the player
+	volumeSetAt           time.Time     // last +/- press; polls just after it are ignored
+	currentTrack          queue.Item
+	hasTrack              bool
+	autoStarting          bool // a track added to an idle queue is being started
+	spotifyAdvancePending bool
+	failStreak            int // consecutive tracks mpv failed to play; reset on success or a manual play
 
 	// Whether mpv started successfully — gates playback-related UI hints
 	mpvReady bool
@@ -161,8 +162,8 @@ type Model struct {
 	libLoaded      bool // playlists fetched at least once
 	libLoading     bool
 	libErr         error
-	libCursor      int // cursor in the playlist list
-	libSeq         int // identifies the fetches whose answers we still want
+	libCursor      int                      // cursor in the playlist list
+	libSeq         int                      // identifies the fetches whose answers we still want
 	libOpen        spotify.Playlist         // the playlist whose tracks are shown
 	libTracks      map[string]*libTrackList // session cache by Playlist.Key
 	libTrackCursor int
@@ -243,27 +244,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.playing = msg.Playing
 		m.position = msg.Position
 		m.lastPollAt = time.Now()
-		// Only accept a known duration — mpv reports null for a moment when
-		// a track is loading, and volumeCmd sends a state with no duration.
-		// Neither should blank a length we already have.
+
 		if msg.Duration > 0 {
 			m.duration = msg.Duration
-			// Save the length on the queue item if it didn't have one
-			// (local files). The ID check skips a poll that started before
-			// the track changed.
-			if m.hasTrack && msg.TrackID == m.currentTrack.ID && m.currentTrack.Duration == 0 {
+
+			if m.hasTrack &&
+				msg.TrackID == m.currentTrack.ID &&
+				m.currentTrack.Duration == 0 {
 				m.currentTrack.Duration = msg.Duration
 				m.queue.SetDuration(m.currentTrack.ID, msg.Duration)
 			}
 		}
-		// A poll that started before a +/- press would still carry the
-		// old volume, so give the new value a moment to settle.
+
 		if msg.Volume >= 0 && time.Since(m.volumeSetAt) > 2*time.Second {
 			m.volume = msg.Volume
 		}
 
+		// Spotify has no mpv-style end-of-file event.
+		// Advance when the current track is almost over.
+		if m.hasTrack &&
+			m.currentTrack.Source == queue.SourceSpotify &&
+			msg.TrackID == m.currentTrack.ID &&
+			msg.Playing &&
+			m.duration > 0 &&
+			msg.Position >= m.duration-time.Second &&
+			!m.spotifyAdvancePending {
+
+			m.spotifyAdvancePending = true
+			return m, m.advanceQueueCmd(false)
+		}
+
 	case TrackStartMsg:
 		m.autoStarting = false
+		m.spotifyAdvancePending = false
 		m.hasTrack = true
 		m.currentTrack = msg.Item
 		// Start from whatever the item knows; the next poll fills in the
