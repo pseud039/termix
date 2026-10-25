@@ -49,4 +49,17 @@ type State struct {
 	Duration time.Duration // 0 = unknown
 	Volume   int
 	TrackID  string // so the app can detect track changes
+	ItemID   string // backend-reported track ID, empty when unknown
+}
+
+type Snapshot struct {
+	Position float64
+	Playing  bool
+	Duration float64
+	Volume   int
+	ItemID   string
+}
+
+type Snapshotter interface {
+	Snapshot(ctx context.Context) (Snapshot, error)
 }

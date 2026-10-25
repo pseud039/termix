@@ -15,8 +15,6 @@ import (
 const syncedRecord = `{"id":1,"trackName":"Song","artistName":"Artist","albumName":"Album","duration":200,
 "instrumental":false,"plainLyrics":"one\ntwo","syncedLyrics":"[00:01.00]one\n[00:02.00]two"}`
 
-// fakeServer answers /get and /search with the given handler and records
-// every request's path and query.
 func fakeServer(t *testing.T, cache *DiskCache, handle func(w http.ResponseWriter, path string, q url.Values)) (*Client, *[]string) {
 	t.Helper()
 	var calls []string

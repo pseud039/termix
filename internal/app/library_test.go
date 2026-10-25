@@ -11,8 +11,6 @@ import (
 	"github.com/pseud039/termix/internal/spotify"
 )
 
-// fakeLibrary serves canned playlists and pages; the tests feed the
-// resulting messages to Update by hand rather than running the Cmds.
 type fakeLibrary struct{}
 
 func (fakeLibrary) Playlists(context.Context) ([]spotify.Playlist, error) { return nil, nil }

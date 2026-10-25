@@ -119,16 +119,18 @@ type Model struct {
 	statusIsErr bool
 
 	// Playback state — updated every second by pollPlaybackCmd
-	playing      bool
-	position     time.Duration
-	duration     time.Duration // total length of current track; 0 = unknown
-	volume       int           // -1 until the first poll reads it from the player
-	volumeSetAt  time.Time     // last +/- press; polls just after it are ignored
-	currentTrack queue.Item
-	hasTrack     bool
-	autoStarting bool // a track added to an idle queue is being started
-	failStreak   int  // consecutive tracks mpv failed to play; reset on success or a manual play
-
+	playing             bool
+	position            time.Duration
+	duration            time.Duration // total length of current track; 0 = unknown
+	volume              int           // -1 until the first poll reads it from the player
+	volumeSetAt         time.Time     // last +/- press; polls just after it are ignored
+	currentTrack        queue.Item
+	hasTrack            bool
+	autoStarting        bool      // a track added to an idle queue is being started
+	spotifyNearEnd      bool      // a poll saw the current track playing in its last seconds
+	spotifyAdvancedFrom string    // ID of the track an auto-advance was already fired for
+	trackStartedAt      time.Time // when the current track was started
+	failStreak          int       // consecutive tracks mpv failed to play; reset on success or a manual play
 	// Whether mpv started successfully — gates playback-related UI hints
 	mpvReady bool
 
@@ -161,8 +163,8 @@ type Model struct {
 	libLoaded      bool // playlists fetched at least once
 	libLoading     bool
 	libErr         error
-	libCursor      int // cursor in the playlist list
-	libSeq         int // identifies the fetches whose answers we still want
+	libCursor      int                      // cursor in the playlist list
+	libSeq         int                      // identifies the fetches whose answers we still want
 	libOpen        spotify.Playlist         // the playlist whose tracks are shown
 	libTracks      map[string]*libTrackList // session cache by Playlist.Key
 	libTrackCursor int
@@ -246,7 +248,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only accept a known duration — mpv reports null for a moment when
 		// a track is loading, and volumeCmd sends a state with no duration.
 		// Neither should blank a length we already have.
-		if msg.Duration > 0 {
+		sameTrack := msg.ItemID == "" || !m.hasTrack || msg.ItemID == m.currentTrack.ID
+		if msg.Duration > 0 && sameTrack {
 			m.duration = msg.Duration
 			// Save the length on the queue item if it didn't have one
 			// (local files). The ID check skips a poll that started before
@@ -261,9 +264,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Volume >= 0 && time.Since(m.volumeSetAt) > 2*time.Second {
 			m.volume = msg.Volume
 		}
+		if m.spotifyEnded(msg) {
+			m.spotifyAdvancedFrom = m.currentTrack.ID
+			return m, m.advanceQueueCmd(false)
+		}
 
 	case TrackStartMsg:
 		m.autoStarting = false
+		m.spotifyNearEnd = false
+		m.spotifyAdvancedFrom = ""
+		m.trackStartedAt = time.Now()
 		m.hasTrack = true
 		m.currentTrack = msg.Item
 		// Start from whatever the item knows; the next poll fills in the
@@ -737,31 +747,54 @@ func plural(n int) string {
 	return "s"
 }
 
+const (
+	spotifyEndWindow  = 2 * time.Second
+	spotifyArmWindow  = 6 * time.Second
+	spotifyStartGrace = 3 * time.Second
+)
+
+func (m *Model) spotifyEnded(msg PlaybackStateMsg) bool {
+	cur := m.currentTrack
+	if !m.hasTrack || cur.Source != queue.SourceSpotify || msg.TrackID != cur.ID {
+		return false
+	}
+	if m.spotifyAdvancedFrom == cur.ID || time.Since(m.trackStartedAt) < spotifyStartGrace {
+		return false
+	}
+	dur := m.duration
+	if dur <= 0 {
+		return false
+	}
+	if msg.ItemID == cur.ID {
+		switch {
+		case msg.Playing && msg.Position >= dur-spotifyEndWindow:
+			return true
+		case msg.Playing:
+			m.spotifyNearEnd = msg.Position >= dur-spotifyArmWindow
+		case m.spotifyNearEnd && (msg.Position >= dur-500*time.Millisecond || msg.Position < time.Second):
+			return true
+		}
+		return false
+	}
+	return m.spotifyNearEnd
+}
+
 // pollPlaybackCmd asks the active player for its position and duration.
 // It runs on every TickMsg.
 func (m Model) pollPlaybackCmd() tea.Cmd {
 	trackID := m.currentTrack.ID
 	return func() tea.Msg {
-		pos, playing, err := m.router.Position(m.ctx)
+		snap, err := m.router.Snapshot(m.ctx)
 		if err != nil {
 			return nil // transient poll errors are expected; don't spam the status bar
 		}
-		// Duration is polled separately so a failure here doesn't drop the
-		// position update — we just report "unknown" (0) for this tick.
-		dur, err := m.router.Duration(m.ctx)
-		if err != nil {
-			dur = 0
-		}
-		vol, err := m.router.Volume(m.ctx)
-		if err != nil {
-			vol = -1
-		}
 		return PlaybackStateMsg{
-			Playing:  playing,
-			Position: time.Duration(pos * float64(time.Second)),
-			Duration: time.Duration(dur * float64(time.Second)),
-			Volume:   vol,
+			Playing:  snap.Playing,
+			Position: time.Duration(snap.Position * float64(time.Second)),
+			Duration: time.Duration(snap.Duration * float64(time.Second)),
+			Volume:   snap.Volume,
 			TrackID:  trackID,
+			ItemID:   snap.ItemID,
 		}
 	}
 }

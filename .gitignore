@@ -10,7 +10,7 @@
 
 # Test binary, built with `go test -c`
 *.test
-
+    
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
@@ -19,7 +19,7 @@ profile.cov
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
-
+desktop.ini
 # Go workspace file
 go.work
 go.work.sum
@@ -31,5 +31,6 @@ config.toml
 # .idea/
 # .vscode/
 termix
+CLAUDE.md
 .env
 dist/

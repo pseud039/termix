@@ -106,6 +106,27 @@ func (r *Router) Duration(ctx context.Context) (float64, error) {
 	return r.active.Duration(ctx)
 }
 
+func (r *Router) Snapshot(ctx context.Context) (Snapshot, error) {
+	if r.active != nil {
+		if s, ok := r.active.(Snapshotter); ok {
+			return s.Snapshot(ctx)
+		}
+	}
+	pos, playing, err := r.Position(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	dur, err := r.Duration(ctx)
+	if err != nil {
+		dur = 0
+	}
+	vol, err := r.Volume(ctx)
+	if err != nil {
+		vol = -1
+	}
+	return Snapshot{Position: pos, Playing: playing, Duration: dur, Volume: vol}, nil
+}
+
 func (r *Router) Stop(ctx context.Context) error {
 	if r.active == nil {
 		return nil

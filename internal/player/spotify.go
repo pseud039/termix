@@ -183,6 +183,25 @@ func (s *SpotifyPlayer) Duration(ctx context.Context) (float64, error) {
 	return float64(state.Item.Duration) / 1000.0, nil
 }
 
+func (s *SpotifyPlayer) Snapshot(ctx context.Context) (Snapshot, error) {
+	state, err := s.client.PlayerState(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snap := Snapshot{Volume: -1}
+	if state == nil {
+		return snap, nil
+	}
+	snap.Volume = int(state.Device.Volume)
+	if state.Item != nil {
+		snap.Position = float64(state.Progress) / 1000.0
+		snap.Playing = state.Playing
+		snap.Duration = float64(state.Item.Duration) / 1000.0
+		snap.ItemID = string(state.Item.ID)
+	}
+	return snap, nil
+}
+
 func (s *SpotifyPlayer) Stop(ctx context.Context) error {
 	// The Web API has no hard "stop" — Pause is the closest equivalent.
 	// Router.Stop() is only called when switching away from Spotify to
